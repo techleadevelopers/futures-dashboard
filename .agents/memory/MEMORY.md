@@ -1,0 +1,1 @@
+- [Orval queryKey required](orval-querykey.md) — all generated useGet* hooks require explicit queryKey in the query options object; always import getGet*QueryKey() and pass it.
