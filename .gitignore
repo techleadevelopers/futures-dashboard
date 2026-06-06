@@ -54,3 +54,6 @@ telemetry.jsonl
 
 # Standalone backend repository
 /backend/
+
+# Standalone quant brain repository
+/quant-brain/
