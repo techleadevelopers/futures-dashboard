@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
-import { useLocation } from "wouter";
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
-  useGetBingXSummary, useGetBingXOrders, useGetBingXTicker, getGetBingXTickerQueryKey,
-  useGetTelemetryState, getGetBingXSummaryQueryKey, getGetBingXOrdersQueryKey, getGetTelemetryStateQueryKey,
-} from "@workspace/api-client-react";
+  useGetBingXTicker, getGetBingXTickerQueryKey,
+} from "@/api-client";
 import AppShell from "@/components/app-shell";
+import { fetchDemoAnalysisState, fetchTelemetryState, type DemoPosition } from "@/lib/demo-live";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +15,82 @@ import {
 } from "lucide-react";
 
 type WindowSize = 10 | 25 | 50 | 100;
+type AnalysisSource = "DEMO" | "LIVE";
+
+interface TelemetryOutcome {
+  id: string;
+  isDemo?: boolean;
+  source?: "bingx-live" | "bingx-vst" | "manual";
+  symbol: string;
+  positionSide: "LONG" | "SHORT";
+  exitTime: number;
+  realizedPnl: number;
+  grossPnl: number;
+  fee: number;
+}
+
+interface TelemetryWithOutcomes {
+  source?: "all" | "demo" | "live";
+  totalTrades: number;
+  ewmaWinRate: number;
+  ewmaEv: number;
+  ewmaFeePerTrade: number;
+  symbolProfiles: Array<{
+    symbol: string;
+    totalSamples: number;
+    priorityScore: number;
+    toxicityScore: number;
+    isToxic: boolean;
+  }>;
+  hourProfile: Array<{
+    hour: number;
+    pnl: number;
+    winRate: number;
+    samples: number;
+  }>;
+  gateRecommendation: {
+    confidence: string;
+    evMinThreshold: number;
+    winRateMin: number;
+    profitFactorMin: number;
+    toxicSymbols: string[];
+    toxicHours: number[];
+    basedOnSamples: number;
+  };
+  recentOutcomes?: TelemetryOutcome[];
+  quantTradeSummary?: {
+    totalTrades: number;
+    demoTrades: number;
+    liveTrades: number;
+    sources: Array<{
+      source: string;
+      isDemo: boolean;
+      trades: number;
+      wins: number;
+      losses: number;
+      pnlUsdt: number;
+      positivePnlUsdt: number;
+      negativePnlUsdt: number;
+      lastTradeAt: number;
+    }>;
+  } | null;
+}
+
+interface DemoAnalysisState {
+  connected: boolean;
+  balance?: string;
+  equity?: string;
+  availableBalance?: string;
+  usedMargin?: string;
+  unrealizedPnl?: string;
+  openUnrealizedPnl: number;
+  openPositionsCount?: number;
+  positions: DemoPosition[];
+  positionsConfirmed?: boolean;
+  currency?: string;
+  telemetry: TelemetryWithOutcomes;
+  error?: string;
+}
 
 function PnLBadge({ val, dec = 4 }: { val: number; dec?: number }) {
   if (val > 0) return <span className="text-green-400 font-mono font-bold">+{val.toFixed(dec)}</span>;
@@ -66,44 +142,81 @@ function ConfidenceBadge({ c }: { c: string }) {
 }
 
 export default function AnalysisPage() {
-  const [, setLocation] = useLocation();
   const [window, setWindow] = useState<WindowSize>(50);
+  const [analysisSource, setAnalysisSource] = useState<AnalysisSource>("DEMO");
 
-  const { data: summary } = useGetBingXSummary({ query: { queryKey: getGetBingXSummaryQueryKey(), refetchInterval: 60000 } });
-  const { data: orders, isLoading } = useGetBingXOrders(
-    { limit: 100 },
-    { query: { queryKey: getGetBingXOrdersQueryKey({ limit: 100 }), refetchInterval: 60000, enabled: !!summary?.connected } }
-  );
   const { data: btcTicker } = useGetBingXTicker(
     { symbol: "BTC-USDT" },
     { query: { refetchInterval: 5000, queryKey: getGetBingXTickerQueryKey({ symbol: "BTC-USDT" }) } }
   );
-  const { data: telemetry } = useGetTelemetryState({ query: { queryKey: getGetTelemetryStateQueryKey(), refetchInterval: 30000 } });
-
-  useEffect(() => {
-    if (summary && !summary.connected) setLocation("/");
-  }, [summary, setLocation]);
+  const { data: demoAnalysis, isLoading: isLoadingDemoAnalysis } = useQuery({
+    queryKey: ["demo-analysis-state"],
+    queryFn: () => fetchDemoAnalysisState() as Promise<DemoAnalysisState>,
+    refetchInterval: 3000,
+    placeholderData: (previousData) => previousData,
+  });
+  const { data: liveTelemetry, isLoading: isLoadingLiveTelemetry } = useQuery({
+    queryKey: ["telemetry-state", "live"],
+    queryFn: () => fetchTelemetryState("live") as Promise<TelemetryWithOutcomes>,
+    enabled: analysisSource === "LIVE",
+    refetchInterval: 10000,
+    placeholderData: (previousData) => previousData,
+  });
 
   const btcChange = btcTicker ? parseFloat(btcTicker.priceChangePercent) : 0;
   const btcRegime = btcChange >= 0.5 ? "BULL" : btcChange <= -0.5 ? "BEAR" : "NEUTRAL";
+  const telemetry = analysisSource === "DEMO" ? demoAnalysis?.telemetry : liveTelemetry;
+  const isLoading = analysisSource === "DEMO"
+    ? isLoadingDemoAnalysis && !telemetry
+    : isLoadingLiveTelemetry && !telemetry;
+  const demoPositions = demoAnalysis?.positions ?? [];
+  const openDemoPnl = demoAnalysis?.openUnrealizedPnl ?? 0;
+  const demoConnected = demoAnalysis?.connected ?? false;
+  const extendedTelemetry = telemetry;
+  const recentOutcomes = (extendedTelemetry?.recentOutcomes ?? [])
+    .filter((outcome) => analysisSource === "DEMO"
+      ? outcome.isDemo === true || outcome.source === "bingx-vst"
+      : outcome.isDemo !== true && outcome.source !== "bingx-vst");
+  const permanentLedger = useMemo(() => {
+    const sources = extendedTelemetry?.quantTradeSummary?.sources ?? [];
+    const selected = sources.filter((source) => analysisSource === "DEMO" ? source.isDemo : !source.isDemo);
+    return selected.reduce((total, source) => ({
+      trades: total.trades + source.trades,
+      wins: total.wins + source.wins,
+      losses: total.losses + source.losses,
+      positive: total.positive + source.positivePnlUsdt,
+      negative: total.negative + source.negativePnlUsdt,
+      net: total.net + source.pnlUsdt,
+    }), { trades: 0, wins: 0, losses: 0, positive: 0, negative: 0, net: 0 });
+  }, [analysisSource, extendedTelemetry?.quantTradeSummary?.sources]);
 
   const stats = useMemo(() => {
-    if (!orders || orders.length === 0) return null;
+    if (recentOutcomes.length === 0) return null;
 
-    const filled = orders.filter((o) => o.status === "FILLED");
-    const withProfit = filled.filter((o) => o.profit !== null && o.profit !== undefined);
+    const withProfit = recentOutcomes.map((outcome) => ({
+      symbol: outcome.symbol,
+      positionSide: outcome.positionSide,
+      time: outcome.exitTime,
+      profit: String(outcome.realizedPnl),
+      grossProfit: String(outcome.grossPnl),
+      commission: String(outcome.fee),
+    }));
+    const filled = withProfit;
     const windowed = withProfit.slice(0, window);
 
     const profits = windowed.map((o) => parseFloat(o.profit!));
+    const grossProfits = windowed.map((o) => parseFloat(o.grossProfit));
     const wins = profits.filter((p) => p > 0);
     const losses = profits.filter((p) => p < 0);
-    const totalPnl = profits.reduce((s, p) => s + p, 0);
+    const totalPnl = grossProfits.reduce((s, p) => s + p, 0);
     const totalFees = filled.slice(0, window).map((o) => parseFloat(o.commission ?? "0")).reduce((s, f) => s + Math.abs(f), 0);
-    const netPnl = totalPnl - totalFees;
+    const netPnl = profits.reduce((s, p) => s + p, 0);
     const winRate = profits.length > 0 ? (wins.length / profits.length) * 100 : 0;
     const avgWin = wins.length > 0 ? wins.reduce((s, p) => s + p, 0) / wins.length : 0;
     const avgLoss = losses.length > 0 ? losses.reduce((s, p) => s + p, 0) / losses.length : 0;
-    const profitFactor = Math.abs(avgLoss) > 0 ? Math.abs(avgWin / avgLoss) : 0;
+    const grossWins = wins.reduce((sum, pnl) => sum + pnl, 0);
+    const grossLosses = Math.abs(losses.reduce((sum, pnl) => sum + pnl, 0));
+    const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Number.POSITIVE_INFINITY : 0;
     const ev = (winRate / 100) * avgWin + ((100 - winRate) / 100) * avgLoss;
     const bestTrade = profits.length > 0 ? Math.max(...profits) : 0;
     const worstTrade = profits.length > 0 ? Math.min(...profits) : 0;
@@ -164,7 +277,7 @@ export default function AnalysisPage() {
       hourData, currentStreak, streakDir, longs, shorts, longPnl, shortPnl, longWR, shortWR,
       filled, withProfit, windowed,
     };
-  }, [orders, window]);
+  }, [recentOutcomes, window]);
 
   const edgeLabel = !stats ? "NO DATA"
     : stats.winRate >= 55 && stats.profitFactor >= 1.5 && stats.ev > 0 ? "STRONG EDGE"
@@ -185,15 +298,31 @@ export default function AnalysisPage() {
     <AppShell>
       <div className="p-6 space-y-6 max-w-[1400px] mx-auto">
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h1 className="text-lg font-bold tracking-tight">Analysis — War Room</h1>
             <p className="text-xs text-muted-foreground mt-0.5">
               Telemetry-driven edge calibration · pipeline: signal → EV gate → execution → realized PnL
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">Window:</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex h-7 overflow-hidden border border-border/60">
+              {(["DEMO", "LIVE"] as AnalysisSource[]).map((source) => (
+                <button
+                  key={source}
+                  type="button"
+                  onClick={() => setAnalysisSource(source)}
+                  className={`px-3 text-[10px] font-bold transition-colors ${
+                    analysisSource === source
+                      ? source === "DEMO" ? "bg-blue-500/15 text-blue-400" : "bg-green-500/15 text-green-400"
+                      : "text-muted-foreground hover:bg-muted/30"
+                  }`}
+                >
+                  {source === "DEMO" ? "VST DEMO" : "LIVE"}
+                </button>
+              ))}
+            </div>
+            <span className="text-xs text-muted-foreground">Últimos fechamentos:</span>
             {([10, 25, 50, 100] as WindowSize[]).map((w) => (
               <Button
                 key={w}
@@ -208,6 +337,61 @@ export default function AnalysisPage() {
           </div>
         </div>
 
+        {demoConnected && (
+          <div className="grid grid-cols-1 gap-3 border border-blue-500/25 bg-blue-500/5 p-4 sm:grid-cols-3">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Demo VST</p>
+              <p className="mt-1 font-mono text-sm font-bold text-blue-400">ATIVA</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">PnL aberto</p>
+              <p className={`mt-1 font-mono text-sm font-bold ${openDemoPnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                {openDemoPnl >= 0 ? "+" : ""}{openDemoPnl.toFixed(4)} VST
+              </p>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Posições abertas</p>
+              <p className="mt-1 font-mono text-sm font-bold">{demoPositions.length}</p>
+            </div>
+          </div>
+        )}
+
+        <Card className="border-border/60 bg-card/40">
+          <CardHeader className="border-b border-border/40 px-5 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+                <Shield className="h-4 w-4 text-primary" />
+                Controle permanente de PnL realizado
+              </CardTitle>
+              <Badge variant="outline" className="font-mono">{analysisSource}</Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="grid grid-cols-2 gap-4 p-5 md:grid-cols-4">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">PnL positivo</p>
+              <p className="mt-1 font-mono text-2xl font-bold text-green-400">+{permanentLedger.positive.toFixed(4)}</p>
+              <p className="mt-1 text-[10px] text-muted-foreground">{permanentLedger.wins} fechamentos positivos</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">PnL negativo</p>
+              <p className="mt-1 font-mono text-2xl font-bold text-red-400">{permanentLedger.negative.toFixed(4)}</p>
+              <p className="mt-1 text-[10px] text-muted-foreground">{permanentLedger.losses} fechamentos negativos</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Saldo líquido</p>
+              <p className={`mt-1 font-mono text-2xl font-bold ${permanentLedger.net >= 0 ? "text-green-400" : "text-red-400"}`}>
+                {permanentLedger.net >= 0 ? "+" : ""}{permanentLedger.net.toFixed(4)}
+              </p>
+              <p className="mt-1 text-[10px] text-muted-foreground">Persistido no Quant Brain</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Amostra realizada</p>
+              <p className="mt-1 font-mono text-2xl font-bold">{permanentLedger.trades}</p>
+              <p className="mt-1 text-[10px] text-muted-foreground">Não depende da janela selecionada</p>
+            </div>
+          </CardContent>
+        </Card>
+
         {isLoading ? (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             {[1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-32 rounded-lg" />)}
@@ -215,8 +399,8 @@ export default function AnalysisPage() {
         ) : !stats ? (
           <div className="flex flex-col items-center gap-3 py-20 text-muted-foreground">
             <BarChart3 className="h-10 w-10 opacity-15" />
-            <p className="text-sm">No trade data yet</p>
-            <p className="text-xs opacity-60">Execute trades to populate telemetry</p>
+            <p className="text-sm">Nenhuma operação {analysisSource === "DEMO" ? "demo" : "live"} fechada ainda</p>
+            <p className="text-xs opacity-60">O PnL aberto aparece acima; as métricas entram após o fechamento.</p>
           </div>
         ) : (
           <>
@@ -299,7 +483,7 @@ export default function AnalysisPage() {
                     <div>fee drag: <span className="text-orange-400 font-mono">−{stats.totalFees.toFixed(4)}</span></div>
                     <div>net: <span className={`font-mono font-semibold ${stats.netPnl >= 0 ? "text-green-400" : "text-red-400"}`}>{stats.netPnl >= 0 ? "+" : ""}{stats.netPnl.toFixed(4)}</span></div>
                   </div>
-                  <p className="text-[9px] text-muted-foreground mt-2">Last {window} closed trades</p>
+                  <p className="text-[9px] text-muted-foreground mt-2">Últimos {Math.min(window, stats.profits.length)} fechamentos {analysisSource.toLowerCase()}</p>
                 </CardContent>
               </Card>
 
@@ -388,8 +572,8 @@ export default function AnalysisPage() {
                   />
                   <div className="mt-3 pt-3 border-t border-border/20">
                     <p className="text-[10px] text-muted-foreground">
-                      Gate thresholds calibrated from last <span className="text-foreground font-mono">{window}</span> closed trades.
-                      Increase window for stability, decrease for recency.
+                      Limiares calibrados pelos últimos <span className="text-foreground font-mono">{Math.min(window, stats.profits.length)}</span> fechamentos.
+                      Uma janela maior dá estabilidade; uma menor reage mais rápido.
                     </p>
                   </div>
                 </CardContent>
@@ -677,7 +861,7 @@ export default function AnalysisPage() {
                 <div className="flex gap-6 mt-3 pt-3 border-t border-border/20 text-xs text-muted-foreground">
                   <span>Long fills: <span className="text-foreground font-mono">{stats.longs.length}</span></span>
                   <span>Short fills: <span className="text-foreground font-mono">{stats.shorts.length}</span></span>
-                  <span>Fill rate: <span className="text-primary font-mono">{orders ? ((stats.filled.length / orders.length) * 100).toFixed(0) : 0}%</span></span>
+                  <span>Fonte: <span className="text-primary font-mono">{analysisSource}</span></span>
                   <span className="ml-auto">
                     Net after fees: <span className={`font-mono font-bold ${stats.netPnl >= 0 ? "text-green-400" : "text-red-400"}`}>{stats.netPnl >= 0 ? "+" : ""}{stats.netPnl.toFixed(4)}</span>
                   </span>
