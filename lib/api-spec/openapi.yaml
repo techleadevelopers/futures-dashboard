@@ -461,6 +461,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/DemoStatus"
 
+  /demo/analysis-state:
+    get:
+      operationId: getDemoAnalysisState
+      tags: [demo]
+      summary: Read-only consolidated demo account state and demo-scoped telemetry
+      responses:
+        "200":
+          description: Demo account plus telemetry state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DemoAnalysisState"
+
   /demo/order:
     post:
       operationId: placeDemoOrder
@@ -521,6 +534,13 @@ paths:
     get:
       operationId: getTelemetryState
       tags: [telemetry]
+      parameters:
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [all, demo, live]
       summary: Full adaptive engine state — symbol profiles, cluster profiles, hour toxicity, gate recommendation
       responses:
         "200":
@@ -852,17 +872,92 @@ components:
           type: boolean
         balance:
           type: string
+        equity:
+          type: string
         availableBalance:
+          type: string
+        usedMargin:
           type: string
         unrealizedPnl:
           type: string
+        openUnrealizedPnl:
+          type: number
         openPositionsCount:
           type: integer
+        positions:
+          type: array
+          items:
+            $ref: "#/components/schemas/DemoPosition"
+        positionsConfirmed:
+          type: boolean
         currency:
           type: string
         error:
           type: string
       required: [connected]
+
+    DemoPosition:
+      type: object
+      properties:
+        symbol:
+          type: string
+        positionSide:
+          type: string
+        positionAmt:
+          type: string
+        availableAmt:
+          type: string
+        avgPrice:
+          type: string
+        markPrice:
+          type: string
+        unrealizedProfit:
+          type: string
+        leverage:
+          type: integer
+        margin:
+          type: string
+        liquidationPrice:
+          type: string
+        entryTime:
+          type: integer
+        metadata:
+          type: object
+          additionalProperties: true
+      required: [symbol, positionSide, positionAmt, availableAmt, avgPrice, unrealizedProfit]
+
+    DemoAnalysisState:
+      type: object
+      properties:
+        connected:
+          type: boolean
+        balance:
+          type: string
+        equity:
+          type: string
+        availableBalance:
+          type: string
+        usedMargin:
+          type: string
+        unrealizedPnl:
+          type: string
+        openUnrealizedPnl:
+          type: number
+        openPositionsCount:
+          type: integer
+        positions:
+          type: array
+          items:
+            $ref: "#/components/schemas/DemoPosition"
+        positionsConfirmed:
+          type: boolean
+        currency:
+          type: string
+        telemetry:
+          $ref: "#/components/schemas/TelemetryState"
+        error:
+          type: string
+      required: [connected, positions, openUnrealizedPnl, telemetry]
 
     DemoOrderRequest:
       type: object
@@ -1283,6 +1378,34 @@ components:
           type: integer
       required: [recorded, id, totalTrades]
 
+    TelemetryOutcome:
+      allOf:
+        - $ref: "#/components/schemas/TradeOutcomeInput"
+        - type: object
+          properties:
+            isDemo:
+              type: boolean
+            source:
+              type: string
+
+    QuantTradeSourceSummary:
+      type: object
+      properties:
+        count:
+          type: integer
+        realized_pnl:
+          type: number
+        win_rate:
+          type: number
+        avg_realized_pnl:
+          type: number
+      additionalProperties: true
+
+    QuantTradeSummary:
+      type: object
+      additionalProperties:
+        $ref: "#/components/schemas/QuantTradeSourceSummary"
+
     ContextSignal:
       type: object
       properties:
@@ -1639,6 +1762,9 @@ components:
     TelemetryState:
       type: object
       properties:
+        source:
+          type: string
+          enum: [all, demo, live]
         totalTrades:
           type: integer
         ewmaWinRate:
@@ -1661,7 +1787,14 @@ components:
             $ref: "#/components/schemas/HourProfile"
         gateRecommendation:
           $ref: "#/components/schemas/GateRecommendation"
+        recentOutcomes:
+          type: array
+          items:
+            $ref: "#/components/schemas/TelemetryOutcome"
+        quantTradeSummary:
+          $ref: "#/components/schemas/QuantTradeSummary"
       required:
+        - source
         - totalTrades
         - ewmaWinRate
         - ewmaEv
@@ -1670,3 +1803,4 @@ components:
         - clusterProfiles
         - hourProfile
         - gateRecommendation
+        - recentOutcomes
