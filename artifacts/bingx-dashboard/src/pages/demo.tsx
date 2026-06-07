@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import {
   useGetBingXTicker,
   useGetBotConfig,
+  useGetBotEdge,
   useGetBotScan,
   useGetDemoStatus,
   useConnectDemo,
@@ -11,20 +13,23 @@ import {
   useCloseDemoPosition,
   getGetBingXTickerQueryKey,
   getGetBotConfigQueryKey,
+  getGetBotEdgeQueryKey,
   getGetBotScanQueryKey,
   getGetDemoStatusQueryKey,
-} from "@workspace/api-client-react";
+} from "@/api-client";
 import AppShell from "@/components/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
+import { apiUrl } from "@/lib/api-url";
+import { fetchDemoPositions, type DemoPosition } from "@/lib/demo-live";
 import {
   FlaskConical, ShieldCheck, ShieldOff,
   Zap, Radio, CheckCircle2, XCircle, ArrowRight, Loader2,
   TrendingUp, TrendingDown, DollarSign, LogOut, Play, Square,
-  Clock, Target, AlertTriangle, RefreshCw,
+  Clock, Target, AlertTriangle, RefreshCw, Shield,
 } from "lucide-react";
 
 interface LogEntry {
@@ -39,6 +44,30 @@ interface LogEntry {
   orderId?: string | null;
 }
 
+const AUTO_FIRE_MAX_PER_CYCLE = 1;
+const AUTO_FIRE_MIN_INTERVAL_MS = 12_000;
+const AUTO_FIRE_SYMBOL_COOLDOWN_MS = 90_000;
+
+interface DemoRiskClose {
+  symbol: string;
+  positionSide: "LONG" | "SHORT";
+  quantity: number;
+  reason: string;
+  pnl: number;
+  orderId: string | null;
+  balanceBefore?: number | null;
+  balanceAfter?: number | null;
+}
+
+async function runDemoRiskCheck(): Promise<{ checked: number; closed: DemoRiskClose[] }> {
+  const response = await fetch(apiUrl("/api/demo/risk-check"), {
+    method: "POST",
+    credentials: "include",
+  });
+  if (!response.ok) throw new Error("Failed to run demo risk check");
+  return response.json() as Promise<{ checked: number; closed: DemoRiskClose[] }>;
+}
+
 function GateTag({ reject }: { reject: string }) {
   const label = reject.split(":")[0];
   return (
@@ -46,6 +75,37 @@ function GateTag({ reject }: { reject: string }) {
       {label}
     </span>
   );
+}
+
+function getOrderErrorLog(error: unknown): { gateRejects: string[]; message: string } {
+  const fallback = { gateRejects: ["REQUEST_ERROR"], message: "Request failed" };
+  if (!error || typeof error !== "object") return fallback;
+
+  const apiError = error as { data?: unknown; message?: unknown; status?: unknown };
+  const data = apiError.data;
+  if (!data || typeof data !== "object") {
+    const message = typeof apiError.message === "string" ? apiError.message : fallback.message;
+    return { gateRejects: fallback.gateRejects, message };
+  }
+
+  const payload = data as {
+    gateRejects?: unknown;
+    message?: unknown;
+    error?: unknown;
+  };
+  const gateRejects = Array.isArray(payload.gateRejects)
+    ? payload.gateRejects.filter((reject): reject is string => typeof reject === "string")
+    : [];
+  const message =
+    typeof payload.message === "string" ? payload.message
+      : typeof payload.error === "string" ? payload.error
+        : typeof apiError.message === "string" ? apiError.message
+          : fallback.message;
+
+  return {
+    gateRejects: gateRejects.length > 0 ? gateRejects : fallback.gateRejects,
+    message,
+  };
 }
 
 function ScanRow({
@@ -60,6 +120,21 @@ function ScanRow({
 }) {
   const short = symbol.replace("-USDT", "").replace("-USD", "");
   const up = priceChangePct >= 0;
+  const volatility = Math.min(11, Math.max(4, Math.abs(priceChangePct) * 1.1));
+  const trendStep = up ? -0.42 : 0.42;
+  const sparkY = Array.from({ length: 18 }, (_, i) => {
+    const base = 18 + i * trendStep;
+    const jag =
+      (i % 2 === 0 ? -1 : 1) * volatility * 0.72 +
+      (i % 5 === 0 ? -1 : 0.45) * volatility * 0.38;
+    const wave = Math.sin(i * 2.35) * volatility * 0.35 + jag;
+    return Math.min(27, Math.max(4, base + wave));
+  });
+  const sparkPoints = sparkY.map((y, i) => `${(i / (sparkY.length - 1)) * 100},${y}`).join(" ");
+  const sparkArea = `0,30 ${sparkPoints} 100,30`;
+  const chartPrimary = up ? "#22c55e" : "#ef4444";
+  const chartSecondary = up ? "#67e8f9" : "#f97316";
+  const chartGlow = up ? "drop-shadow(0 0 5px rgba(34,197,94,0.45))" : "drop-shadow(0 0 5px rgba(239,68,68,0.45))";
 
   const statusColor = isToxic ? "text-red-400"
     : isCandidate ? "text-green-400"
@@ -93,14 +168,56 @@ function ScanRow({
         {/* Gate status */}
         <div className="flex-1 min-w-0">
           {isCandidate ? (
-            <div className="flex items-center gap-1.5">
+            <div className="space-y-1.5 [&>svg:first-child]:hidden [&>span:nth-child(2)]:hidden [&>span:nth-child(3)]:hidden">
+              <div className="flex items-center justify-between gap-2 text-[9px] font-mono">
+                <span className={up ? "text-green-400" : "text-red-400"}>
+                  {up ? "+" : ""}{priceChangePct.toFixed(2)}%
+                </span>
+                <span className="text-muted-foreground">
+                  {samples > 0 ? `WR ${(ewmaWinRate * 100).toFixed(0)}% · EV ${ev.toFixed(3)}` : "no telemetry"}
+                </span>
+              </div>
               <CheckCircle2 className="w-3.5 h-3.5 text-green-400 shrink-0" />
-              <span className="text-[10px] text-green-400 font-semibold">All gates pass</span>
+              <span className="text-[10px] text-green-400 font-semibold">EDGE READY</span>
               {samples > 0 && (
                 <span className="text-[9px] text-muted-foreground font-mono ml-1">
                   WR {(ewmaWinRate * 100).toFixed(0)}% · EV {ev.toFixed(3)}
                 </span>
               )}
+              <svg viewBox="0 0 100 34" preserveAspectRatio="none" className="h-9 w-full overflow-visible">
+                <defs>
+                  <linearGradient id={`edge-fill-${symbol}-${positionSide}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={chartPrimary} stopOpacity="0.34" />
+                    <stop offset="72%" stopColor={chartPrimary} stopOpacity="0.08" />
+                    <stop offset="100%" stopColor={chartPrimary} stopOpacity="0" />
+                  </linearGradient>
+                  <linearGradient id={`edge-line-${symbol}-${positionSide}`} x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0%" stopColor={chartPrimary} />
+                    <stop offset="55%" stopColor={chartSecondary} />
+                    <stop offset="100%" stopColor={chartPrimary} />
+                  </linearGradient>
+                </defs>
+                <line x1="0" y1="29" x2="100" y2="29" stroke="rgba(148,163,184,0.16)" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+                <polygon points={sparkArea} fill={`url(#edge-fill-${symbol}-${positionSide})`} />
+                <polyline
+                  points={sparkPoints}
+                  fill="none"
+                  stroke={`url(#edge-line-${symbol}-${positionSide})`}
+                  strokeWidth="1.25"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  vectorEffect="non-scaling-stroke"
+                  style={{ filter: chartGlow }}
+                />
+                <circle
+                  cx="100"
+                  cy={sparkY[sparkY.length - 1]}
+                  r="2.4"
+                  fill={chartPrimary}
+                  vectorEffect="non-scaling-stroke"
+                  style={{ filter: chartGlow }}
+                />
+              </svg>
             </div>
           ) : (
             <div className="flex flex-wrap gap-1 items-center">
@@ -168,14 +285,104 @@ function LogRow({ entry }: { entry: LogEntry }) {
   );
 }
 
+function PositionRow({
+  position,
+  closing,
+  onClose,
+}: {
+  position: DemoPosition;
+  closing: boolean;
+  onClose: () => void;
+}) {
+  const pnl = parseFloat(position.unrealizedProfit || "0");
+  const qty = Math.abs(parseFloat(position.positionAmt || "0"));
+  const short = position.symbol.replace("-USDT", "");
+  const isLong = position.positionSide === "LONG";
+
+  return (
+    <div className="px-3 py-2.5 border-b border-border/10 last:border-0">
+      <div className="flex items-center gap-2">
+        <span className={`w-1.5 h-1.5 rounded-full ${pnl >= 0 ? "bg-green-400" : "bg-red-400"}`} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold">{short}</span>
+            <span className={`text-[10px] font-mono ${isLong ? "text-green-400" : "text-red-400"}`}>
+              {position.positionSide}
+            </span>
+            <span className="text-[9px] text-muted-foreground font-mono">{position.leverage}x</span>
+          </div>
+          <div className="mt-1 grid grid-cols-3 gap-2 text-[9px] font-mono text-muted-foreground">
+            <span>Qty {qty.toFixed(4)}</span>
+            <span>Entry {parseFloat(position.entryPrice || "0").toFixed(4)}</span>
+            <span>Mark {parseFloat(position.markPrice || "0").toFixed(4)}</span>
+          </div>
+        </div>
+        <div className="text-right shrink-0">
+          <div className={`text-xs font-mono font-bold ${pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+            {pnl >= 0 ? "+" : ""}{pnl.toFixed(4)}
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={closing}
+            onClick={onClose}
+            className="h-6 px-2 mt-1 text-[10px] text-muted-foreground hover:text-red-400"
+          >
+            {closing ? <Loader2 className="w-3 h-3 animate-spin" /> : "Close"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MiniPositionRow({ position }: { position: DemoPosition }) {
+  const pnl = parseFloat(position.unrealizedProfit || "0");
+  const qty = Math.abs(parseFloat(position.positionAmt || "0"));
+  const short = position.symbol.replace("-USDT", "");
+
+  return (
+    <div className="px-3 py-2 border-b border-border/10 last:border-0">
+      <div className="flex items-center gap-2">
+        <span className={`w-1.5 h-1.5 rounded-full ${pnl >= 0 ? "bg-green-400" : "bg-red-400"}`} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-bold">{short}</span>
+            <span className={`text-[9px] font-mono ${position.positionSide === "LONG" ? "text-green-400" : "text-red-400"}`}>
+              {position.positionSide}
+            </span>
+            <span className="text-[9px] text-muted-foreground font-mono">qty {qty.toFixed(4)}</span>
+          </div>
+          <div className="mt-1 h-1 rounded-full bg-muted/30 overflow-hidden">
+            <div
+              className={`h-full rounded-full ${pnl >= 0
+                ? "bg-gradient-to-r from-green-500 to-cyan-300"
+                : "bg-gradient-to-r from-red-500 to-orange-300"}`}
+              style={{ width: `${Math.min(100, Math.max(8, Math.abs(pnl) * 35))}%` }}
+            />
+          </div>
+        </div>
+        <span className={`text-[11px] font-mono font-bold shrink-0 ${pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+          {pnl >= 0 ? "+" : ""}{pnl.toFixed(4)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export default function DemoPage() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
 
   const [autoFire, setAutoFire] = useState(false);
   const [firingSet, setFiringSet] = useState<Set<string>>(new Set());
+  const [closingSet, setClosingSet] = useState<Set<string>>(new Set());
   const [log, setLog] = useState<LogEntry[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
+  const autoFiredKeysRef = useRef<Set<string>>(new Set());
+  const lastAutoFireAtRef = useRef(0);
+  const symbolCooldownRef = useRef<Map<string, number>>(new Map());
+  const riskClosingKeysRef = useRef<Set<string>>(new Set());
 
   const { data: btcTicker } = useGetBingXTicker(
     { symbol: "BTC-USDT" },
@@ -187,7 +394,28 @@ export default function DemoPage() {
   });
 
   const { data: demoStatus, refetch: refetchStatus } = useGetDemoStatus({
-    query: { queryKey: getGetDemoStatusQueryKey(), refetchInterval: 15000 },
+    query: {
+      queryKey: getGetDemoStatusQueryKey(),
+      refetchInterval: 3000,
+      placeholderData: (previousData) => previousData,
+    },
+  });
+
+  const {
+    data: demoPositions = [],
+    refetch: refetchDemoPositions,
+  } = useQuery({
+    queryKey: ["demo-positions"],
+    queryFn: fetchDemoPositions,
+    enabled: !!demoStatus?.connected,
+    refetchInterval: 3000,
+  });
+
+  const { data: riskCheck } = useQuery({
+    queryKey: ["demo-risk-check"],
+    queryFn: runDemoRiskCheck,
+    enabled: !!demoStatus?.connected,
+    refetchInterval: 2000,
   });
 
   const btcChange = btcTicker ? parseFloat(btcTicker.priceChangePercent) : 0;
@@ -203,12 +431,28 @@ export default function DemoPage() {
     }
   );
 
+  const { data: edge } = useGetBotEdge(
+    { btcChangePct: btcChange, interval: "5m" },
+    {
+      query: {
+        queryKey: getGetBotEdgeQueryKey({ btcChangePct: btcChange, interval: "5m" }),
+        refetchInterval: 8000,
+        enabled: !!(demoStatus?.connected && (config?.allowedSymbols?.length ?? 0) > 0),
+      },
+    }
+  );
+
   const connectMutation = useConnectDemo();
   const disconnectMutation = useDisconnectDemo();
   const orderMutation = usePlaceDemoOrder();
   const closeMutation = useCloseDemoPosition();
 
   const demoConnected = demoStatus?.connected ?? false;
+  const demoAccount = demoStatus as (typeof demoStatus & {
+    equity?: string;
+    usedMargin?: string;
+    positionsConfirmed?: boolean;
+  }) | undefined;
 
   const btcRegime = btcChange >= (config?.btcRegimeThresholdPct ?? 0.5) ? "BULL"
     : btcChange <= -(config?.btcRegimeThresholdPct ?? 0.5) ? "BEAR"
@@ -228,7 +472,9 @@ export default function DemoPage() {
       {
         onSuccess: (data) => {
           if (data.connected) {
-            toast({ title: "Demo VST ativado", description: `Balance: ${data.balance ?? "?"} ${data.currency ?? "VST"}` });
+            setAutoFire(true);
+            autoFiredKeysRef.current.clear();
+            toast({ title: "Demo VST ativado", description: `Auto-Fire ligado · Balance: ${data.balance ?? "?"} ${data.currency ?? "VST"}` });
             refetchStatus();
           } else {
             toast({ title: "Falha ao conectar", description: data.error ?? "Verifique se sua conta BingX está conectada", variant: "destructive" });
@@ -241,6 +487,7 @@ export default function DemoPage() {
 
   function handleDisconnect() {
     setAutoFire(false);
+    autoFiredKeysRef.current.clear();
     disconnectMutation.mutate(undefined, {
       onSuccess: () => { toast({ title: "Demo disconnected" }); refetchStatus(); },
     });
@@ -252,6 +499,7 @@ export default function DemoPage() {
     ev: number,
     ewmaWinRate: number,
     execute: boolean,
+    lastPrice?: string,
   ) {
     const side = positionSide === "LONG" ? "BUY" as const : "SELL" as const;
     const key = `${symbol}-${positionSide}`;
@@ -266,8 +514,9 @@ export default function DemoPage() {
           currentEv: ev,
           currentWinRate: ewmaWinRate,
           btcChangePct: btcChange,
+          lastPrice,
           execute,
-        },
+        } as never,
       },
       {
         onSuccess: (result) => {
@@ -275,27 +524,176 @@ export default function DemoPage() {
           if (result.placed) {
             toast({ title: `Demo order placed`, description: `${positionSide} ${symbol}` });
             refetchStatus();
+            refetchDemoPositions();
+          } else {
+            autoFiredKeysRef.current.delete(key);
           }
         },
-        onError: () => addLog({ symbol, positionSide, placed: false, observationMode: false, gateRejects: ["REQUEST_ERROR"], message: "Request failed" }),
+        onError: (error) => {
+          autoFiredKeysRef.current.delete(key);
+          const errorLog = getOrderErrorLog(error);
+          addLog({
+            symbol,
+            positionSide,
+            placed: false,
+            observationMode: false,
+            gateRejects: errorLog.gateRejects,
+            message: errorLog.message,
+          });
+        },
         onSettled: () => setFiringSet(prev => { const s = new Set(prev); s.delete(key); return s; }),
       }
     );
   }
 
+  function closeDemoPosition(position: DemoPosition) {
+    const key = `${position.symbol}-${position.positionSide}`;
+    const quantity = Math.abs(parseFloat(position.positionAmt || "0"));
+    if (!Number.isFinite(quantity) || quantity <= 0 || closingSet.has(key)) return;
+
+    setClosingSet(prev => new Set(prev).add(key));
+    closeMutation.mutate(
+      {
+        data: {
+          symbol: position.symbol,
+          positionSide: position.positionSide,
+          quantity: quantity.toString(),
+        },
+      },
+      {
+        onSuccess: (result) => {
+          autoFiredKeysRef.current.delete(key);
+          riskClosingKeysRef.current.delete(key);
+          addLog({
+            symbol: position.symbol,
+            positionSide: position.positionSide,
+            placed: result.placed,
+            observationMode: result.observationMode,
+            gateRejects: result.gateRejects,
+            message: result.message,
+            orderId: result.orderId,
+          });
+          refetchStatus();
+          refetchDemoPositions();
+        },
+        onError: () => {
+          riskClosingKeysRef.current.delete(key);
+          addLog({
+            symbol: position.symbol,
+            positionSide: position.positionSide,
+            placed: false,
+            observationMode: false,
+            gateRejects: ["CLOSE_ERROR"],
+            message: "Close request failed",
+          });
+        },
+        onSettled: () => {
+          riskClosingKeysRef.current.delete(key);
+          setClosingSet(prev => {
+            const next = new Set(prev);
+            next.delete(key);
+            return next;
+          });
+        },
+      },
+    );
+  }
+
   const autoFireRef = useRef(autoFire);
   autoFireRef.current = autoFire;
+  const loggedRiskCloseRef = useRef<Set<string>>(new Set());
+  const statusDemoPositions =
+    ((demoStatus as { positions?: DemoPosition[] } | undefined)?.positions ?? []);
+  const visibleDemoPositions = demoPositions.length > 0 ? demoPositions : statusDemoPositions;
+
+  useEffect(() => {
+    if (demoConnected) {
+      setAutoFire(true);
+    }
+  }, [demoConnected]);
+
+  useEffect(() => {
+    if (!riskCheck?.closed?.length) return;
+    for (const closed of riskCheck.closed) {
+      const key = `${closed.symbol}-${closed.positionSide}-${closed.orderId ?? closed.pnl}`;
+      if (loggedRiskCloseRef.current.has(key)) continue;
+      loggedRiskCloseRef.current.add(key);
+      autoFiredKeysRef.current.delete(`${closed.symbol}-${closed.positionSide}`);
+      riskClosingKeysRef.current.delete(`${closed.symbol}-${closed.positionSide}`);
+      setClosingSet(prev => {
+        const next = new Set(prev);
+        next.delete(`${closed.symbol}-${closed.positionSide}`);
+        return next;
+      });
+      addLog({
+        symbol: closed.symbol,
+        positionSide: closed.positionSide,
+        placed: true,
+        observationMode: false,
+        gateRejects: [closed.reason.includes("TAKE_PROFIT") ? "TAKE_PROFIT" : "STOP_LOSS"],
+        message: closed.reason,
+        orderId: closed.orderId,
+      });
+    }
+    refetchStatus();
+    refetchDemoPositions();
+  }, [riskCheck?.closed]);
 
   useEffect(() => {
     if (!autoFire || !scan?.symbols || !demoConnected) return;
-    const candidates = scan.symbols.filter(s => s.isCandidate);
-    candidates.forEach(s => {
+    const maxPositions = config?.maxConcurrentPositions ?? 10;
+    const availableSlots = Math.max(0, maxPositions - visibleDemoPositions.length);
+    if (availableSlots === 0) return;
+
+    const openPositionKeys = new Set(
+      visibleDemoPositions.map((p) => `${p.symbol}-${p.positionSide}`),
+    );
+
+    const edgeBySymbol = new Map(
+      (edge?.symbols ?? [])
+        .filter((s) => s.symbol && s.combined?.bestSide && s.combined.bestSide !== "NEUTRAL")
+        .map((s) => [s.symbol!, s]),
+    );
+
+    const candidates = scan.symbols
+      .map((s) => {
+        const edgeSymbol = edgeBySymbol.get(s.symbol);
+        const bestSide = edgeSymbol?.combined?.bestSide;
+        const edgeScore = bestSide === "LONG"
+          ? edgeSymbol?.combined?.longScore ?? 0
+          : bestSide === "SHORT"
+            ? edgeSymbol?.combined?.shortScore ?? 0
+            : 0;
+
+        return { ...s, edgeScore, edgeAgrees: bestSide === s.positionSide };
+      })
+      .filter((s) => {
+        const key = `${s.symbol}-${s.positionSide}`;
+        const now = Date.now();
+        if (!s.isCandidate) return false;
+        if (now - lastAutoFireAtRef.current < AUTO_FIRE_MIN_INTERVAL_MS) return false;
+        if ((symbolCooldownRef.current.get(key) ?? 0) > now) return false;
+        if (openPositionKeys.has(key)) return false;
+        if (firingSet.has(key)) return false;
+        if (autoFiredKeysRef.current.has(key)) return false;
+        if (edgeBySymbol.size === 0) return true;
+        return s.edgeAgrees && s.edgeScore > 0.01;
+      })
+      .sort((a, b) => {
+        if (b.edgeScore !== a.edgeScore) return b.edgeScore - a.edgeScore;
+        return (b.rankingScore ?? 0) - (a.rankingScore ?? 0);
+      })
+      .slice(0, Math.min(availableSlots, AUTO_FIRE_MAX_PER_CYCLE));
+
+    candidates.forEach((s) => {
       const key = `${s.symbol}-${s.positionSide}`;
-      if (!firingSet.has(key)) {
-        fireDemoOrder(s.symbol, s.positionSide as "LONG" | "SHORT", s.ev, s.ewmaWinRate, true);
-      }
+      const now = Date.now();
+      autoFiredKeysRef.current.add(key);
+      lastAutoFireAtRef.current = now;
+      symbolCooldownRef.current.set(key, now + AUTO_FIRE_SYMBOL_COOLDOWN_MS);
+      fireDemoOrder(s.symbol, s.positionSide as "LONG" | "SHORT", s.ev, s.ewmaWinRate, true, s.lastPrice);
     });
-  }, [scan?.scanTime, autoFire, demoConnected]);
+  }, [scan?.scanTime, edge?.edgeTime, autoFire, demoConnected, visibleDemoPositions.length, config?.maxConcurrentPositions]);
 
   const scanSymbols = scan?.symbols ?? [];
   const candidates = scanSymbols.filter(s => s.isCandidate);
@@ -404,12 +802,20 @@ export default function DemoPage() {
                   <div className="flex justify-between text-xs">
                     <span className="text-muted-foreground">Balance</span>
                     <span className="font-mono font-bold">
-                      {parseFloat(demoStatus.balance ?? "0").toFixed(2)}
+                      {parseFloat(demoStatus.balance ?? "0").toFixed(4)}
                     </span>
                   </div>
                   <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">Equity</span>
+                    <span className="font-mono">{parseFloat(demoAccount?.equity ?? demoStatus.balance ?? "0").toFixed(4)}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
                     <span className="text-muted-foreground">Disponível</span>
-                    <span className="font-mono">{parseFloat(demoStatus.availableBalance ?? "0").toFixed(2)}</span>
+                    <span className="font-mono">{parseFloat(demoStatus.availableBalance ?? "0").toFixed(4)}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">Margem usada</span>
+                    <span className="font-mono">{parseFloat(demoAccount?.usedMargin ?? "0").toFixed(4)}</span>
                   </div>
                   <div className="flex justify-between text-xs">
                     <span className="text-muted-foreground">PnL unrealizado</span>
@@ -421,6 +827,12 @@ export default function DemoPage() {
                     <span className="text-muted-foreground">Posições abertas</span>
                     <span className="font-mono font-semibold">{demoStatus.openPositionsCount ?? 0}</span>
                   </div>
+                  <div className="flex justify-between text-[10px]">
+                    <span className="text-muted-foreground">Confirmacao</span>
+                    <span className={demoAccount?.positionsConfirmed === false ? "text-red-400" : "text-green-400"}>
+                      {demoAccount?.positionsConfirmed === false ? "INDISPONIVEL" : "BINGX VST"}
+                    </span>
+                  </div>
                   <Button
                     variant="ghost" size="sm"
                     className="w-full h-7 text-[10px] text-muted-foreground mt-1"
@@ -428,6 +840,43 @@ export default function DemoPage() {
                   >
                     <RefreshCw className="w-3 h-3 mr-1.5" /> Atualizar
                   </Button>
+                </CardContent>
+              </Card>
+            )}
+
+            {demoConnected && (
+              <Card className="bg-card/40 border-border/40">
+                <CardHeader className="px-4 pt-4 pb-3 border-b border-border/20">
+                  <CardTitle className="text-sm font-semibold flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-2">
+                      <TrendingDown className="w-4 h-4 text-primary" />
+                      Posições Demo
+                    </span>
+                    <span className="text-[10px] font-mono text-muted-foreground">
+                      {visibleDemoPositions.length} aberta{visibleDemoPositions.length === 1 ? "" : "s"}
+                    </span>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-0">
+                  {visibleDemoPositions.length === 0 ? (
+                    <div className="px-4 py-6 text-center text-xs text-muted-foreground">
+                      Nenhuma posição aberta
+                    </div>
+                  ) : (
+                    <div className="max-h-[320px] overflow-y-auto">
+                      {visibleDemoPositions.map((position) => {
+                        const key = `${position.symbol}-${position.positionSide}`;
+                        return (
+                          <PositionRow
+                            key={key}
+                            position={position}
+                            closing={closingSet.has(key)}
+                            onClose={() => closeDemoPosition(position)}
+                          />
+                        );
+                      })}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             )}
@@ -497,152 +946,370 @@ export default function DemoPage() {
             )}
           </div>
 
-          {/* ── CENTER PANEL — scanner ── */}
-          <Card className="bg-card/40 border-border/40">
-            <CardHeader className="px-4 pt-4 pb-3 border-b border-border/20">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                  <Radio className="w-4 h-4 text-primary" />
-                  Scanner Sniper
-                  {scan && (
-                    <span className={`ml-2 text-[10px] font-mono px-1.5 py-0.5 rounded ${
-                      candidates.length > 0 ? "bg-green-500/15 text-green-400" : "bg-muted/30 text-muted-foreground"
-                    }`}>
-                      {candidates.length} ready
-                    </span>
-                  )}
-                </CardTitle>
-                <div className="flex items-center gap-2">
-                  {scan && (
-                    <span className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold ${
-                      scan.btcRegime === "BULL" ? "bg-green-500/15 text-green-400"
-                      : scan.btcRegime === "BEAR" ? "bg-red-500/15 text-red-400"
-                      : "bg-muted/30 text-muted-foreground"
-                    }`}>
-                      {scan.btcRegime} · UTC{scan.currentHourUtc}h
-                    </span>
-                  )}
-                </div>
-              </div>
-            </CardHeader>
+       {/* ── CENTER PANEL — scanner ── */}
+<Card className="bg-card/30 border-border/40 flex flex-col h-full">
+  <CardHeader className="px-5 pt-5 pb-3 border-b border-border/15 shrink-0">
+    <div className="flex items-center justify-between">
+      <div className="flex items-center gap-2">
+        <div className="p-1.5 rounded-lg bg-primary/10">
+          <Radio className="w-3.5 h-3.5 text-primary" />
+        </div>
+        <CardTitle className="text-sm font-semibold tracking-tight">Scanner Sniper</CardTitle>
+        {scan && (
+          <span className={`ml-2 text-[10px] font-mono font-bold px-2 py-0.5 rounded-full ${
+            candidates.length > 0 ? "bg-green-500/20 text-green-400" : "bg-muted/30 text-muted-foreground"
+          }`}>
+            {candidates.length} ready
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        {scan && (
+          <div className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[9px] font-mono font-bold ${
+            scan.btcRegime === "BULL" ? "bg-green-500/10 text-green-400 border border-green-500/20"
+            : scan.btcRegime === "BEAR" ? "bg-red-500/10 text-red-400 border border-red-500/20"
+            : "bg-muted/20 text-muted-foreground border border-border/30"
+          }`}>
+            <div className={`w-1.5 h-1.5 rounded-full ${
+              scan.btcRegime === "BULL" ? "bg-green-400 animate-pulse"
+              : scan.btcRegime === "BEAR" ? "bg-red-400" : "bg-muted-foreground"
+            }`} />
+            {scan.btcRegime} · UTC{scan.currentHourUtc}h
+          </div>
+        )}
+      </div>
+    </div>
+  </CardHeader>
 
-            {!demoConnected ? (
-              <div className="flex flex-col items-center gap-3 py-20 text-muted-foreground">
-                <Radio className="w-8 h-8 opacity-15" />
-                <p className="text-sm">Scanner inativo — conecte a conta demo</p>
-              </div>
-            ) : (config?.allowedSymbols?.length ?? 0) === 0 ? (
-              <div className="flex flex-col items-center gap-3 py-20 text-muted-foreground">
-                <AlertTriangle className="w-8 h-8 opacity-20" />
-                <p className="text-sm">Nenhum símbolo configurado</p>
-                <p className="text-xs opacity-60">Configure SCALP_SYMBOLS no .env</p>
-              </div>
-            ) : !scan ? (
-              <div className="flex flex-col items-center gap-3 py-20 text-muted-foreground">
-                <Loader2 className="w-8 h-8 animate-spin opacity-30" />
-                <p className="text-sm">Escaneando...</p>
-              </div>
-            ) : scanSymbols.length === 0 ? (
-              <div className="flex flex-col items-center gap-3 py-16 text-muted-foreground">
-                <p className="text-sm">Nenhum símbolo no scan</p>
-              </div>
-            ) : (
-              <div className="overflow-y-auto max-h-[600px]">
-                {scanSymbols.map((s, i) => {
-                  const key = `${s.symbol}-${s.positionSide}`;
-                  return (
-                    <ScanRow
-                      key={`${key}-${i}`}
-                      {...s}
-                      autoFire={autoFire}
-                      firing={firingSet.has(key)}
-                      onFire={() => fireDemoOrder(
+  {!demoConnected ? (
+    <div className="flex flex-col items-center gap-4 py-24 text-muted-foreground">
+      <Radio className="w-10 h-10 opacity-10" />
+      <div className="text-center">
+        <p className="text-sm font-medium">Scanner inativo</p>
+        <p className="text-[10px] opacity-60 mt-1">Conecte a conta demo para ativar</p>
+      </div>
+    </div>
+  ) : (config?.allowedSymbols?.length ?? 0) === 0 ? (
+    <div className="flex flex-col items-center gap-4 py-24 text-muted-foreground">
+      <AlertTriangle className="w-10 h-10 opacity-20" />
+      <div className="text-center">
+        <p className="text-sm font-medium">Nenhum símbolo configurado</p>
+        <p className="text-[10px] opacity-60 mt-1">Configure SCALP_SYMBOLS no .env</p>
+      </div>
+    </div>
+  ) : !scan ? (
+    <div className="flex flex-col items-center gap-4 py-24 text-muted-foreground">
+      <Loader2 className="w-10 h-10 animate-spin opacity-30" />
+      <p className="text-sm">Escaneando mercado...</p>
+    </div>
+  ) : scanSymbols.length === 0 ? (
+    <div className="flex flex-col items-center gap-3 py-20 text-muted-foreground">
+      <p className="text-sm">Nenhum símbolo no scan</p>
+    </div>
+  ) : (
+    <div className="flex-1 overflow-y-auto custom-scrollbar">
+      <div className="divide-y divide-border/5">
+        {scanSymbols.map((s, i) => {
+          const key = `${s.symbol}-${s.positionSide}`;
+          const isReady = s.isCandidate;
+          const isToxic = s.isToxic;
+          const isGatePass = s.gatePass && !isReady;
+          
+          return (
+            <div
+              key={`${key}-${i}`}
+              className={`group px-5 py-3 transition-all duration-150 hover:bg-muted/10 ${
+                isReady && "bg-gradient-to-r from-green-500/5 to-transparent"
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                {/* Left side - Symbol & Side */}
+                <div className="flex items-center gap-3 min-w-[140px]">
+                  <div className={`w-2 h-2 rounded-full transition-all ${
+                    isToxic ? "bg-red-500" : isReady ? "bg-green-400 animate-pulse" : isGatePass ? "bg-yellow-500" : "bg-muted-foreground/30"
+                  }`} />
+                  <div className="flex items-center gap-2">
+                    {(() => {
+                      const base = s.symbol.replace("-USDT", "").replace("-USD", "").toLowerCase();
+                      const icons: Record<string, string> = {
+                        btc: "https://cryptologos.cc/logos/bitcoin-btc-logo.svg",
+                        eth: "https://cryptologos.cc/logos/ethereum-eth-logo.svg",
+                        sol: "https://cryptologos.cc/logos/solana-sol-logo.svg",
+                        vvv: "https://cryptologos.cc/logos/vvv-vvv-logo.svg",
+                      };
+                      const iconUrl = icons[base];
+                      return iconUrl ? (
+                        <img src={iconUrl} alt={base} className="w-5 h-5" onError={(e) => (e.target as HTMLImageElement).style.display = 'none'} />
+                      ) : (
+                        <div className="w-5 h-5 rounded-full bg-muted/20 flex items-center justify-center">
+                          <span className="text-[9px] font-bold">{base.slice(0, 2).toUpperCase()}</span>
+                        </div>
+                      );
+                    })()}
+                    <div>
+                      <p className="text-sm font-mono font-semibold">{s.symbol.replace("-USDT", "")}</p>
+                      <div className="flex items-center gap-1 mt-0.5">
+                        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                          s.positionSide === "LONG" ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"
+                        }`}>
+                          {s.positionSide === "LONG" ? "LONG" : "SHORT"}
+                        </span>
+                        {s.samples > 0 && (
+                          <span className="text-[8px] text-muted-foreground">{s.samples} trades</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Center - Metrics */}
+                <div className="hidden md:flex items-center gap-6">
+                  <div className="text-right">
+                    <p className={`text-sm font-mono font-bold tabular-nums ${
+                      s.priceChangePct >= 0 ? "text-green-400" : "text-red-400"
+                    }`}>
+                      {s.priceChangePct >= 0 ? "+" : ""}{s.priceChangePct.toFixed(2)}%
+                    </p>
+                    <p className="text-[8px] text-muted-foreground uppercase tracking-wider">24h</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-mono font-bold tabular-nums">
+                      {s.samples > 0 ? `${Math.round(s.priorityScore * 100)}` : "—"}
+                    </p>
+                    <p className="text-[8px] text-muted-foreground uppercase tracking-wider">PRIORITY</p>
+                  </div>
+                  <div className="text-right">
+                    <p className={`text-sm font-mono font-bold tabular-nums ${
+                      s.ev >= 0 ? "text-green-400" : "text-red-400"
+                    }`}>
+                      {s.ev > 0 ? "+" : ""}{s.ev.toFixed(4)}
+                    </p>
+                    <p className="text-[8px] text-muted-foreground uppercase tracking-wider">EV</p>
+                  </div>
+                </div>
+
+                {/* Right side - Action */}
+                <div className="flex items-center gap-3">
+                  {isToxic ? (
+                    <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-red-500/10">
+                      <Shield className="w-3 h-3 text-red-400" />
+                      <span className="text-[9px] font-medium text-red-400">TOXIC</span>
+                    </div>
+                  ) : isReady ? (
+                    <Button
+                      size="sm"
+                      onClick={() => fireDemoOrder(
                         s.symbol,
                         s.positionSide as "LONG" | "SHORT",
                         s.ev,
                         s.ewmaWinRate,
                         true,
+                        s.lastPrice,
                       )}
-                    />
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Legend */}
-            {scanSymbols.length > 0 && (
-              <div className="px-4 py-2 border-t border-border/20 flex items-center gap-4 flex-wrap">
-                {[
-                  ["bg-green-400 animate-pulse", "ready"],
-                  ["bg-red-500", "toxic"],
-                  ["bg-yellow-400", "pass (no EV data)"],
-                  ["bg-muted-foreground/40", "blocked"],
-                ].map(([cls, label]) => (
-                  <div key={label} className="flex items-center gap-1.5">
-                    <span className={`w-1.5 h-1.5 rounded-full ${cls}`} />
-                    <span className="text-[9px] text-muted-foreground">{label}</span>
-                  </div>
-                ))}
-                <span className="text-[9px] text-muted-foreground ml-auto">scan a cada 8s</span>
-              </div>
-            )}
-          </Card>
-
-          {/* ── RIGHT PANEL — log ── */}
-          <Card className="bg-card/30 border-border/40 flex flex-col">
-            <CardHeader className="px-4 pt-4 pb-3 border-b border-border/20 shrink-0">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                  <Clock className="w-4 h-4 text-primary" />
-                  Execution Log
-                </CardTitle>
-                <div className="flex items-center gap-2">
-                  <span className="text-[9px] text-muted-foreground">{log.length} entries</span>
-                  {log.length > 0 && (
-                    <Button
-                      variant="ghost" size="sm"
-                      className="h-6 px-2 text-[10px] text-muted-foreground"
-                      onClick={() => setLog([])}
+                      disabled={firingSet.has(key) || autoFire}
+                      className="h-8 px-4 text-[11px] font-bold transition-all duration-200 bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary shadow-lg shadow-primary/20 hover:shadow-xl hover:shadow-primary/30 active:scale-95"
                     >
-                      clear
+                      {firingSet.has(key) ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <>
+                          <Zap className="w-3.5 h-3.5 mr-1.5" />
+                          EXECUTE
+                        </>
+                      )}
                     </Button>
+                  ) : isGatePass ? (
+                    <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-yellow-500/10">
+                      <Clock className="w-3 h-3 text-yellow-400" />
+                      <span className="text-[9px] font-medium text-yellow-400">WAITING</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-muted/20">
+                      <XCircle className="w-3 h-3 text-muted-foreground" />
+                      <span className="text-[9px] text-muted-foreground">BLOCKED</span>
+                    </div>
                   )}
                 </div>
               </div>
-            </CardHeader>
 
-            <div ref={logRef} className="flex-1 overflow-y-auto max-h-[640px]">
-              {log.length === 0 ? (
-                <div className="flex flex-col items-center gap-3 py-16 text-muted-foreground">
-                  <ArrowRight className="w-6 h-6 opacity-15" />
-                  <p className="text-xs">Nenhuma ordem ainda</p>
-                  <p className="text-[10px] opacity-60">Use o botão "Fire" ou ative o Auto-Fire</p>
+              {/* Progress bar for priority score */}
+              {s.samples > 0 && (
+                <div className="mt-2 ml-12">
+                  <div className="h-0.5 w-full bg-border/20 rounded-full overflow-hidden">
+                    <div 
+                      className={`h-full rounded-full transition-all duration-500 ${
+                        isToxic ? "bg-red-500" : isReady ? "bg-gradient-to-r from-green-500 to-emerald-500" : "bg-primary/40"
+                      }`}
+                      style={{ width: `${Math.min(100, Math.max(0, s.priorityScore * 100))}%` }}
+                    />
+                  </div>
                 </div>
-              ) : (
-                log.map(entry => <LogRow key={entry.id} entry={entry} />)
               )}
             </div>
+          );
+        })}
+      </div>
+    </div>
+  )}
 
-            {/* Log summary */}
-            {log.length > 0 && (
-              <div className="px-4 py-3 border-t border-border/20 shrink-0">
-                <div className="grid grid-cols-3 gap-2 text-center">
-                  <div>
-                    <div className="text-sm font-bold text-green-400">{log.filter(l => l.placed).length}</div>
-                    <div className="text-[9px] text-muted-foreground">filled</div>
+  {/* Legend */}
+  {scanSymbols.length > 0 && (
+    <div className="px-5 py-2.5 border-t border-border/15 shrink-0 bg-muted/5">
+      <div className="flex items-center gap-4 flex-wrap">
+        <div className="flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+          <span className="text-[8px] text-muted-foreground uppercase tracking-wider">READY</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+          <span className="text-[8px] text-muted-foreground uppercase tracking-wider">TOXIC</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-yellow-500" />
+          <span className="text-[8px] text-muted-foreground uppercase tracking-wider">WAITING</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/30" />
+          <span className="text-[8px] text-muted-foreground uppercase tracking-wider">BLOCKED</span>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <div className="w-4 h-0.5 rounded-full bg-primary/40" />
+          <span className="text-[8px] text-muted-foreground uppercase tracking-wider">PRIORITY SCORE</span>
+        </div>
+      </div>
+    </div>
+  )}
+</Card>
+
+{/* ── RIGHT PANEL — log ── */}
+<Card className="bg-card/30 border-border/40 flex flex-col h-full">
+  <CardHeader className="px-4 pt-4 pb-3 border-b border-border/20 shrink-0">
+    <div className="flex items-center justify-between">
+      <CardTitle className="text-sm font-semibold flex items-center gap-2">
+        <Clock className="w-4 h-4 text-primary" />
+        Execution Log
+      </CardTitle>
+      <div className="flex items-center gap-2">
+        <span className="text-[9px] text-muted-foreground">{log.length} entries</span>
+        {log.length > 0 && (
+          <Button
+            variant="ghost" 
+            size="sm"
+            className="h-6 px-2 text-[10px] text-muted-foreground hover:text-destructive transition-colors"
+            onClick={() => setLog([])}
+          >
+            clear
+          </Button>
+        )}
+      </div>
+    </div>
+  </CardHeader>
+
+  {/* Open PnL Section */}
+  {demoConnected && (
+    <div className="border-b border-border/20 shrink-0">
+      <div className="px-4 py-2.5 flex items-center justify-between bg-muted/5">
+        <div className="flex items-center gap-2">
+          <TrendingUp className="w-3.5 h-3.5 text-primary" />
+          <span className="text-xs font-semibold">Open PnL</span>
+        </div>
+        <span className="text-[9px] text-muted-foreground font-mono">
+          {visibleDemoPositions.length} active
+        </span>
+      </div>
+      {visibleDemoPositions.length === 0 ? (
+        <div className="px-4 py-4 text-center text-[10px] text-muted-foreground">
+          Nenhuma posição aberta
+        </div>
+      ) : (
+        <div className="max-h-[200px] overflow-y-auto">
+          {visibleDemoPositions.map((position) => {
+            const getIconUrl = (symbol: string) => {
+              const base = symbol.replace("-USDT", "").replace("-USD", "").toLowerCase();
+              const icons: Record<string, string> = {
+                btc: "https://cryptologos.cc/logos/bitcoin-btc-logo.svg",
+                eth: "https://cryptologos.cc/logos/ethereum-eth-logo.svg",
+                sol: "https://cryptologos.cc/logos/solana-sol-logo.svg",
+              };
+              return icons[base] || null;
+            };
+
+            const iconUrl = getIconUrl(position.symbol);
+            const isLong = position.positionSide === "LONG";
+            const pnl = parseFloat(position.unrealizedProfit || "0");
+            const pnlFormatted = pnl.toFixed(4);
+            const shortSym = position.symbol.replace("-USDT", "").replace("-USD", "");
+            const qty = parseFloat((position as any).positionAmt || (position as any).size || "0");
+
+            return (
+              <div key={`${position.symbol}-${position.positionSide}-mini`} className="px-4 py-2.5 border-b border-border/10 last:border-0 hover:bg-muted/10 transition-colors">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    {iconUrl ? (
+                      <img 
+                        src={iconUrl} 
+                        alt={shortSym} 
+                        className="w-4 h-4"
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = 'none';
+                        }}
+                      />
+                    ) : (
+                      <div className="w-4 h-4" />
+                    )}
+                    <span className="text-xs font-mono font-semibold">{shortSym}</span>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${isLong ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>
+                      {isLong ? "LONG" : "SHORT"}
+                    </span>
+                    <span className="text-[9px] text-muted-foreground font-mono">{qty.toFixed(4)}</span>
                   </div>
-                  <div>
-                    <div className="text-sm font-bold text-red-400">{log.filter(l => !l.placed && !l.observationMode).length}</div>
-                    <div className="text-[9px] text-muted-foreground">blocked</div>
-                  </div>
-                  <div>
-                    <div className="text-sm font-bold text-muted-foreground">{log.filter(l => l.observationMode).length}</div>
-                    <div className="text-[9px] text-muted-foreground">obs</div>
-                  </div>
+                  <span className={`text-xs font-mono font-bold ${pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                    {pnl >= 0 ? "+" : ""}{pnlFormatted}
+                  </span>
                 </div>
               </div>
-            )}
-          </Card>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  )}
+
+  {/* Log entries */}
+  <div ref={logRef} className="flex-1 overflow-y-auto min-h-[200px]">
+    {log.length === 0 ? (
+      <div className="flex flex-col items-center gap-3 py-16 text-muted-foreground">
+        <ArrowRight className="w-6 h-6 opacity-20" />
+        <p className="text-xs">Nenhuma ordem ainda</p>
+        <p className="text-[10px] opacity-60">Use o botão "Fire" ou ative o Auto-Fire</p>
+      </div>
+    ) : (
+      <div className="divide-y divide-border/10">
+        {log.map(entry => <LogRow key={entry.id} entry={entry} />)}
+      </div>
+    )}
+  </div>
+
+  {/* Log summary footer */}
+  {log.length > 0 && (
+    <div className="px-4 py-3 border-t border-border/20 shrink-0 bg-muted/5">
+      <div className="grid grid-cols-3 gap-3 text-center">
+        <div className="flex flex-col items-center gap-0.5">
+          <div className="text-base font-bold text-green-400">{log.filter(l => l.placed).length}</div>
+          <div className="text-[8px] text-muted-foreground uppercase tracking-wider">FILLED</div>
+        </div>
+        <div className="flex flex-col items-center gap-0.5">
+          <div className="text-base font-bold text-red-400">{log.filter(l => !l.placed && !l.observationMode).length}</div>
+          <div className="text-[8px] text-muted-foreground uppercase tracking-wider">BLOCKED</div>
+        </div>
+        <div className="flex flex-col items-center gap-0.5">
+          <div className="text-base font-bold text-amber-400">{log.filter(l => l.observationMode).length}</div>
+          <div className="text-[8px] text-muted-foreground uppercase tracking-wider">OBS</div>
+        </div>
+      </div>
+    </div>
+  )}
+</Card>
         </div>
 
         {/* How it works */}
