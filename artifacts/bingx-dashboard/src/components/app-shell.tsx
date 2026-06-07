@@ -9,7 +9,7 @@ import {
   getGetBingXSummaryQueryKey,
   getGetBotScanQueryKey,
   getGetBotConfigQueryKey,
-} from "@workspace/api-client-react";
+} from "@/api-client";
 import { Button } from "@/components/ui/button";
 import {
   LayoutDashboard,
@@ -25,6 +25,7 @@ import {
   Bot,
   Radio,
   FlaskConical,
+  BrainCircuit,
 } from "lucide-react";
 
 const NAV = [
@@ -32,6 +33,7 @@ const NAV = [
   { href: "/positions", label: "Positions", icon: TrendingUp },
   { href: "/orders", label: "Orders", icon: ClipboardList },
   { href: "/analysis", label: "Analysis", icon: BarChart3 },
+  { href: "/intelligence", label: "IA Sniper", icon: BrainCircuit },
   { href: "/bot", label: "Bot", icon: Bot },
   { href: "/demo", label: "Demo Lab", icon: FlaskConical, highlight: true },
   { href: "/settings", label: "Settings", icon: Settings },
@@ -153,6 +155,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const scanSymbols = scan?.symbols ?? [];
   const candidateCount = scan?.candidateCount ?? 0;
   const hasTargets = (botConfig?.allowedSymbols?.length ?? 0) > 0;
+  const accountSummary = summary as
+    | (typeof summary & {
+        recentRealizedPnl?: string;
+        lastRealizedPnl?: string;
+      })
+    | undefined;
+  const recentRealizedPnl = parseFloat(accountSummary?.recentRealizedPnl ?? "0");
+  const openPnl = parseFloat(summary?.totalUnrealizedPnl ?? "0");
 
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden">
@@ -164,7 +174,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <Terminal className="w-4 h-4 text-primary" />
           </div>
           <div>
-            <p className="text-sm font-bold tracking-tight leading-none">BingX Terminal</p>
+            <p className="text-sm font-bold tracking-tight leading-none">Futures Finance</p>
             <div className="flex items-center gap-1.5 mt-0.5">
               <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
               <span className="text-[9px] text-muted-foreground uppercase tracking-widest">Live</span>
@@ -173,31 +183,37 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </div>
 
         {/* BTC Compass */}
-        <div className={`mx-3 mt-3 p-3 rounded-lg border shrink-0 ${btcUp ? "border-green-500/25 bg-green-500/5" : "border-red-500/25 bg-red-500/5"}`}>
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-[9px] font-bold text-muted-foreground uppercase tracking-widest">BTC/USDT</span>
-            <div className="flex items-center gap-1">
-              <Zap className="w-2.5 h-2.5 text-primary" />
-              <span className="text-[9px] text-muted-foreground uppercase tracking-widest">Compass</span>
-            </div>
-          </div>
-          <div className="font-bold font-mono text-base tabular-nums">
-            ${fmtPrice(btcTicker?.lastPrice)}
-          </div>
-          <div className={`flex items-center gap-1 mt-0.5 ${btcUp ? "text-green-400" : "text-red-400"}`}>
-            {btcUp ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />}
-            <span className="text-xs font-semibold font-mono">{btcUp ? "+" : ""}{btcChange.toFixed(2)}%</span>
-            <span className={`ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded ${btcUp ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>
-              {btcUp ? "BULL" : "BEAR"}
-            </span>
-          </div>
-          {btcTicker && (
-            <div className="flex justify-between mt-2 text-[9px] text-muted-foreground font-mono">
-              <span>H: <span className="text-foreground/70">{fmtPrice(btcTicker.highPrice)}</span></span>
-              <span>L: <span className="text-foreground/70">{fmtPrice(btcTicker.lowPrice)}</span></span>
-            </div>
-          )}
-        </div>
+<div className={`mx-3 mt-3 p-3 rounded-lg border shrink-0 ${btcUp ? "border-green-500/25 bg-green-500/5" : "border-red-500/25 bg-red-500/5"}`}>
+  <div className="flex items-center justify-between mb-1">
+    <div className="flex items-center gap-1.5">
+      <span className="text-[9px] font-bold text-muted-foreground uppercase tracking-widest">BTC/USDT</span>
+    </div>
+    <img 
+      src="https://cryptologos.cc/logos/bitcoin-btc-logo.svg" 
+      alt="BTC" 
+      className="w-5 h-5"
+      onError={(e) => {
+        (e.target as HTMLImageElement).style.display = 'none';
+      }}
+    />
+  </div>
+  <div className="font-bold font-mono text-base tabular-nums">
+    ${fmtPrice(btcTicker?.lastPrice)}
+  </div>
+  <div className={`flex items-center gap-1 mt-0.5 ${btcUp ? "text-green-400" : "text-red-400"}`}>
+    {btcUp ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />}
+    <span className="text-xs font-semibold font-mono">{btcUp ? "+" : ""}{btcChange.toFixed(2)}%</span>
+    <span className={`ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded ${btcUp ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>
+      {btcUp ? "BULL" : "BEAR"}
+    </span>
+  </div>
+  {btcTicker && (
+    <div className="flex justify-between mt-2 text-[9px] text-muted-foreground font-mono">
+      <span>H: <span className="text-foreground/70">{fmtPrice(btcTicker.highPrice)}</span></span>
+      <span>L: <span className="text-foreground/70">{fmtPrice(btcTicker.lowPrice)}</span></span>
+    </div>
+  )}
+</div>
 
         {/* Account mini-summary */}
         {summary?.connected && (
@@ -209,9 +225,15 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
                 <span className="font-mono font-semibold">${parseFloat(summary.totalBalance).toFixed(2)}</span>
               </div>
               <div className="flex justify-between text-[10px]">
-                <span className="text-muted-foreground">PnL</span>
-                <span className={`font-mono font-semibold ${parseFloat(summary.totalUnrealizedPnl) >= 0 ? "text-green-400" : "text-red-400"}`}>
-                  {parseFloat(summary.totalUnrealizedPnl) >= 0 ? "+" : ""}{parseFloat(summary.totalUnrealizedPnl).toFixed(4)}
+                <span className="text-muted-foreground">Realized</span>
+                <span className={`font-mono font-semibold ${recentRealizedPnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                  {recentRealizedPnl >= 0 ? "+" : ""}{recentRealizedPnl.toFixed(4)}
+                </span>
+              </div>
+              <div className="flex justify-between text-[10px]">
+                <span className="text-muted-foreground">Open PnL</span>
+                <span className={`font-mono font-semibold ${openPnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                  {openPnl >= 0 ? "+" : ""}{openPnl.toFixed(4)}
                 </span>
               </div>
               <div className="flex justify-between text-[10px]">
