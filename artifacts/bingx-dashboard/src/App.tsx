@@ -11,6 +11,7 @@ import AnalysisPage from "@/pages/analysis";
 import SettingsPage from "@/pages/settings";
 import BotPage from "@/pages/bot";
 import DemoPage from "@/pages/demo";
+import IntelligencePage from "@/pages/intelligence";
 
 const queryClient = new QueryClient();
 
@@ -22,6 +23,7 @@ function Router() {
       <Route path="/positions" component={PositionsPage} />
       <Route path="/orders" component={OrdersPage} />
       <Route path="/analysis" component={AnalysisPage} />
+      <Route path="/intelligence" component={IntelligencePage} />
       <Route path="/bot" component={BotPage} />
       <Route path="/demo" component={DemoPage} />
       <Route path="/settings" component={SettingsPage} />
