@@ -22,7 +22,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "src"),
-      "@assets": path.resolve(import.meta.dirname, "..", "..", "attached_assets"),
+      "@assets": path.resolve(import.meta.dirname, "src", "assets"),
     },
     dedupe: ["react", "react-dom"],
   },
@@ -37,7 +37,7 @@ export default defineConfig({
     host: "127.0.0.1",
     proxy: {
       "/api": {
-        target: "http://localhost:8080",
+        target: process.env.VITE_API_URL ?? "http://localhost:8080",
         changeOrigin: true,
       },
     },
@@ -47,6 +47,6 @@ export default defineConfig({
   },
   preview: {
     port,
-    host: "127.0.0.1",
+    host: "0.0.0.0",
   },
 });
