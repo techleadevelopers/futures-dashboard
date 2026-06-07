@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useLocation } from "wouter";
-import { useGetBingXSummary, useDisconnectBingX, getGetBingXSummaryQueryKey } from "@workspace/api-client-react";
+import { useGetBingXSummary, useDisconnectBingX, getGetBingXSummaryQueryKey } from "@/api-client";
 import AppShell from "@/components/app-shell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
