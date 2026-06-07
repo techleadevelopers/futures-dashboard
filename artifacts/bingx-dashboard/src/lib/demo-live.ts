@@ -21,6 +21,14 @@ export async function fetchTelemetryState(source: "demo" | "live" | "all" = "all
   return response.json();
 }
 
+export async function fetchTelemetryExport(): Promise<unknown> {
+  const response = await fetch(apiUrl("/api/telemetry/export"), {
+    credentials: "include",
+  });
+  if (!response.ok) throw new Error(`Telemetry export HTTP ${response.status}`);
+  return response.json();
+}
+
 export async function fetchDemoAnalysisState(): Promise<unknown> {
   const response = await fetch(apiUrl("/api/demo/analysis-state"), {
     credentials: "include",
