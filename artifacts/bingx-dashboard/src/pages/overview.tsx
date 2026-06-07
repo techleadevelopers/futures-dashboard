@@ -7,7 +7,7 @@ import {
   getGetBingXSummaryQueryKey,
   getGetBingXPositionsQueryKey,
   getGetBingXOrdersQueryKey,
-} from "@workspace/api-client-react";
+} from "@/api-client";
 import AppShell from "@/components/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
