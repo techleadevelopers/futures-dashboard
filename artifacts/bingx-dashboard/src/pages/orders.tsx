@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
-import { useGetBingXSummary, useGetBingXOrders, getGetBingXSummaryQueryKey, getGetBingXOrdersQueryKey } from "@workspace/api-client-react";
+import { useGetBingXSummary, useGetBingXOrders, getGetBingXSummaryQueryKey, getGetBingXOrdersQueryKey } from "@/api-client";
 import AppShell from "@/components/app-shell";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
