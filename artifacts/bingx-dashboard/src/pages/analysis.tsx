@@ -4,7 +4,7 @@ import {
   useGetBingXTicker, getGetBingXTickerQueryKey,
 } from "@/api-client";
 import AppShell from "@/components/app-shell";
-import { fetchDemoAnalysisState, fetchTelemetryState, type DemoPosition } from "@/lib/demo-live";
+import { fetchDemoAnalysisState, fetchTelemetryExport, fetchTelemetryState, type DemoPosition } from "@/lib/demo-live";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -23,10 +23,18 @@ interface TelemetryOutcome {
   source?: "bingx-live" | "bingx-vst" | "manual";
   symbol: string;
   positionSide: "LONG" | "SHORT";
+  side?: "BUY" | "SELL";
+  entryTime?: number;
   exitTime: number;
+  entryPrice?: number;
+  exitPrice?: number;
+  qty?: number;
+  leverage?: number;
+  marginUsed?: number;
   realizedPnl: number;
   grossPnl: number;
   fee: number;
+  exitReason?: "TP" | "SL" | "MANUAL";
 }
 
 interface TelemetryWithOutcomes {
@@ -109,6 +117,17 @@ function MiniBar({ ratio, color, label }: { ratio: number; color: string; label?
   );
 }
 
+function toEpochMs(timestamp?: number) {
+  const value = Number(timestamp ?? 0);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return value > 10_000_000_000 ? value : value * 1000;
+}
+
+function formatClock(timestamp?: number) {
+  const epochMs = toEpochMs(timestamp);
+  return epochMs > 0 ? new Date(epochMs).toLocaleTimeString() : "--";
+}
+
 function GateRow({ label, pass, reason }: { label: string; pass: boolean; reason: string }) {
   return (
     <div className="flex items-center gap-3 py-2 border-b border-border/20 last:border-0">
@@ -162,6 +181,12 @@ export default function AnalysisPage() {
     refetchInterval: 10000,
     placeholderData: (previousData) => previousData,
   });
+  const { data: telemetryExport = [] } = useQuery({
+    queryKey: ["telemetry-export"],
+    queryFn: () => fetchTelemetryExport() as Promise<TelemetryOutcome[]>,
+    refetchInterval: 5000,
+    placeholderData: (previousData) => previousData,
+  });
 
   const btcChange = btcTicker ? parseFloat(btcTicker.priceChangePercent) : 0;
   const btcRegime = btcChange >= 0.5 ? "BULL" : btcChange <= -0.5 ? "BEAR" : "NEUTRAL";
@@ -172,11 +197,31 @@ export default function AnalysisPage() {
   const demoPositions = demoAnalysis?.positions ?? [];
   const openDemoPnl = demoAnalysis?.openUnrealizedPnl ?? 0;
   const demoConnected = demoAnalysis?.connected ?? false;
+  const sortedDemoPositions = useMemo(() => (
+    [...demoPositions].sort((a, b) => Math.abs(Number(b.unrealizedProfit || 0)) - Math.abs(Number(a.unrealizedProfit || 0)))
+  ), [demoPositions]);
   const extendedTelemetry = telemetry;
-  const recentOutcomes = (extendedTelemetry?.recentOutcomes ?? [])
-    .filter((outcome) => analysisSource === "DEMO"
-      ? outcome.isDemo === true || outcome.source === "bingx-vst"
-      : outcome.isDemo !== true && outcome.source !== "bingx-vst");
+  const sourceMatches = (outcome: TelemetryOutcome) => analysisSource === "DEMO"
+    ? outcome.isDemo === true || outcome.source === "bingx-vst"
+    : outcome.isDemo !== true && outcome.source !== "bingx-vst";
+  const exportedOutcomes = Array.isArray(telemetryExport)
+    ? telemetryExport.filter(sourceMatches)
+    : [];
+  const stateOutcomes = (extendedTelemetry?.recentOutcomes ?? [])
+    .filter(sourceMatches);
+  const outcomeById = new Map<string, TelemetryOutcome>();
+  for (const outcome of [...exportedOutcomes, ...stateOutcomes]) {
+    const key = outcome.id || `${outcome.source ?? "unknown"}-${outcome.symbol}-${outcome.positionSide}-${outcome.exitTime}`;
+    outcomeById.set(key, outcome);
+  }
+  const recentOutcomes = Array.from(outcomeById.values())
+    .sort((a, b) => toEpochMs(b.exitTime) - toEpochMs(a.exitTime));
+  const closedLedger = recentOutcomes;
+  const closedPositive = closedLedger.filter((outcome) => Number(outcome.realizedPnl) > 0);
+  const closedNegative = closedLedger.filter((outcome) => Number(outcome.realizedPnl) < 0);
+  const closedPositivePnl = closedPositive.reduce((sum, outcome) => sum + Number(outcome.realizedPnl || 0), 0);
+  const closedNegativePnl = closedNegative.reduce((sum, outcome) => sum + Number(outcome.realizedPnl || 0), 0);
+  const closedNetPnl = closedLedger.reduce((sum, outcome) => sum + Number(outcome.realizedPnl || 0), 0);
   const permanentLedger = useMemo(() => {
     const sources = extendedTelemetry?.quantTradeSummary?.sources ?? [];
     const selected = sources.filter((source) => analysisSource === "DEMO" ? source.isDemo : !source.isDemo);
@@ -189,6 +234,30 @@ export default function AnalysisPage() {
       net: total.net + source.pnlUsdt,
     }), { trades: 0, wins: 0, losses: 0, positive: 0, negative: 0, net: 0 });
   }, [analysisSource, extendedTelemetry?.quantTradeSummary?.sources]);
+  const realizedLedger = closedLedger.length > 0 ? {
+    trades: closedLedger.length,
+    wins: closedPositive.length,
+    losses: closedNegative.length,
+    positive: closedPositivePnl,
+    negative: closedNegativePnl,
+    net: closedNetPnl,
+    sourceLabel: "telemetry detalhado",
+  } : {
+    ...permanentLedger,
+    sourceLabel: "Quant Brain",
+  };
+  const latestCloseTime = useMemo(() => {
+    const sourceTimes = (extendedTelemetry?.quantTradeSummary?.sources ?? [])
+      .filter((source) => analysisSource === "DEMO" ? source.isDemo : !source.isDemo)
+      .map((source) => Number(source.lastTradeAt ?? 0))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    const recentTimes = recentOutcomes
+      .map((outcome) => Number(outcome.exitTime ?? 0))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    const latest = Math.max(0, ...sourceTimes, ...recentTimes);
+    if (!latest) return "--";
+    return formatClock(latest);
+  }, [analysisSource, extendedTelemetry?.quantTradeSummary?.sources, recentOutcomes]);
 
   const stats = useMemo(() => {
     if (recentOutcomes.length === 0) return null;
@@ -196,7 +265,7 @@ export default function AnalysisPage() {
     const withProfit = recentOutcomes.map((outcome) => ({
       symbol: outcome.symbol,
       positionSide: outcome.positionSide,
-      time: outcome.exitTime,
+      time: toEpochMs(outcome.exitTime),
       profit: String(outcome.realizedPnl),
       grossProfit: String(outcome.grossPnl),
       commission: String(outcome.fee),
@@ -369,28 +438,175 @@ export default function AnalysisPage() {
           <CardContent className="grid grid-cols-2 gap-4 p-5 md:grid-cols-4">
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">PnL positivo</p>
-              <p className="mt-1 font-mono text-2xl font-bold text-green-400">+{permanentLedger.positive.toFixed(4)}</p>
-              <p className="mt-1 text-[10px] text-muted-foreground">{permanentLedger.wins} fechamentos positivos</p>
+              <p className="mt-1 font-mono text-2xl font-bold text-green-400">+{realizedLedger.positive.toFixed(4)}</p>
+              <p className="mt-1 text-[10px] text-muted-foreground">{realizedLedger.wins} fechamentos positivos</p>
             </div>
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">PnL negativo</p>
-              <p className="mt-1 font-mono text-2xl font-bold text-red-400">{permanentLedger.negative.toFixed(4)}</p>
-              <p className="mt-1 text-[10px] text-muted-foreground">{permanentLedger.losses} fechamentos negativos</p>
+              <p className="mt-1 font-mono text-2xl font-bold text-red-400">{realizedLedger.negative.toFixed(4)}</p>
+              <p className="mt-1 text-[10px] text-muted-foreground">{realizedLedger.losses} fechamentos negativos</p>
             </div>
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Saldo líquido</p>
-              <p className={`mt-1 font-mono text-2xl font-bold ${permanentLedger.net >= 0 ? "text-green-400" : "text-red-400"}`}>
-                {permanentLedger.net >= 0 ? "+" : ""}{permanentLedger.net.toFixed(4)}
+              <p className={`mt-1 font-mono text-2xl font-bold ${realizedLedger.net >= 0 ? "text-green-400" : "text-red-400"}`}>
+                {realizedLedger.net >= 0 ? "+" : ""}{realizedLedger.net.toFixed(4)}
               </p>
-              <p className="mt-1 text-[10px] text-muted-foreground">Persistido no Quant Brain</p>
+              <p className="mt-1 text-[10px] text-muted-foreground">Fonte: {realizedLedger.sourceLabel}</p>
             </div>
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Amostra realizada</p>
-              <p className="mt-1 font-mono text-2xl font-bold">{permanentLedger.trades}</p>
+              <p className="mt-1 font-mono text-2xl font-bold">{realizedLedger.trades}</p>
               <p className="mt-1 text-[10px] text-muted-foreground">Não depende da janela selecionada</p>
             </div>
           </CardContent>
         </Card>
+
+        <div className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
+          <Card className="border-border/60 bg-card/35">
+            <CardHeader className="border-b border-border/40 px-5 py-3">
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+                  <Activity className="h-4 w-4 text-primary" />
+                  Posições abertas em tempo real
+                </CardTitle>
+                <Badge variant="outline" className="font-mono text-[10px]">
+                  {analysisSource === "DEMO" ? `${demoPositions.length} VST` : "LIVE"}
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              {analysisSource !== "DEMO" ? (
+                <div className="p-5 text-xs text-muted-foreground">Use VST DEMO para ver posições abertas consolidadas nesta tela.</div>
+              ) : sortedDemoPositions.length === 0 ? (
+                <div className="p-5 text-xs text-muted-foreground">Nenhuma posição demo aberta agora.</div>
+              ) : (
+                <div className="divide-y divide-border/30">
+                  {sortedDemoPositions.slice(0, 8).map((position) => {
+                    const pnl = Number(position.unrealizedProfit || 0);
+                    const qty = Number(position.positionAmt || 0);
+                    const entry = Number(position.entryPrice || 0);
+                    const mark = Number(position.markPrice || 0);
+                    const movePct = entry > 0 && mark > 0
+                      ? ((mark - entry) / entry) * 100 * (position.positionSide === "SHORT" ? -1 : 1)
+                      : 0;
+                    return (
+                      <div key={`${position.symbol}-${position.positionSide}-${position.entryPrice}`} className="grid grid-cols-[1fr_90px_90px_110px] items-center gap-3 px-5 py-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-sm font-bold">{position.symbol.replace("-USDT", "")}</span>
+                            <Badge variant="outline" className={`border-0 text-[9px] ${position.positionSide === "LONG" ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>
+                              {position.positionSide}
+                            </Badge>
+                            <span className="font-mono text-[10px] text-muted-foreground">{Number.isFinite(qty) ? Math.abs(qty).toFixed(4) : "--"}</span>
+                          </div>
+                          <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
+                            entry {Number.isFinite(entry) ? entry.toFixed(4) : "--"} · mark {Number.isFinite(mark) ? mark.toFixed(4) : "--"}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-[9px] uppercase text-muted-foreground">Move</p>
+                          <p className={`font-mono text-xs font-bold ${movePct >= 0 ? "text-green-400" : "text-red-400"}`}>
+                            {movePct >= 0 ? "+" : ""}{movePct.toFixed(3)}%
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-[9px] uppercase text-muted-foreground">Lev</p>
+                          <p className="font-mono text-xs font-bold">{position.leverage ?? "--"}x</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-[9px] uppercase text-muted-foreground">Open PnL</p>
+                          <p className={`font-mono text-sm font-bold ${pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                            {pnl >= 0 ? "+" : ""}{Number.isFinite(pnl) ? pnl.toFixed(4) : "0.0000"}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-border/60 bg-card/35">
+            <CardHeader className="border-b border-border/40 px-5 py-3">
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+                  <Clock className="h-4 w-4 text-primary" />
+                  Operacoes fechadas
+                </CardTitle>
+                <span className="font-mono text-[10px] text-muted-foreground">ultimo: {latestCloseTime}</span>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              {recentOutcomes.length > 0 ? (
+                <div className="divide-y divide-border/30">
+                  <div className="grid grid-cols-[86px_1fr_74px_82px_92px] items-center gap-3 px-5 py-2 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    <span>Hora</span>
+                    <span>Par / lado</span>
+                    <span>Motivo</span>
+                    <span>Fee</span>
+                    <span className="text-right">PnL</span>
+                  </div>
+                  {recentOutcomes.slice(0, 100).map((outcome) => {
+                    const pnl = Number(outcome.realizedPnl || 0);
+                    const fee = Number(outcome.fee || 0);
+                    const qty = Number(outcome.qty || 0);
+                    const entry = Number(outcome.entryPrice || 0);
+                    const exit = Number(outcome.exitPrice || 0);
+                    return (
+                      <div key={outcome.id} className="grid grid-cols-[86px_1fr_74px_82px_92px] items-center gap-3 px-5 py-3">
+                        <span className="font-mono text-[10px] text-muted-foreground">{formatClock(outcome.exitTime)}</span>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-sm font-bold">{outcome.symbol.replace("-USDT", "")}</span>
+                            <Badge variant="outline" className={`border-0 text-[9px] ${outcome.positionSide === "LONG" ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>
+                              {outcome.positionSide}
+                            </Badge>
+                            {Number.isFinite(qty) && qty > 0 && <span className="font-mono text-[10px] text-muted-foreground">{qty.toFixed(4)}</span>}
+                          </div>
+                          <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">
+                            entry {Number.isFinite(entry) && entry > 0 ? entry.toFixed(4) : "--"} / exit {Number.isFinite(exit) && exit > 0 ? exit.toFixed(4) : "--"}
+                          </p>
+                        </div>
+                        <Badge variant="outline" className="w-fit border-border/50 font-mono text-[9px]">
+                          {outcome.exitReason ?? "CLOSE"}
+                        </Badge>
+                        <span className="font-mono text-xs text-orange-300">{Number.isFinite(fee) ? fee.toFixed(4) : "0.0000"}</span>
+                        <div className="text-right">
+                          <p className={`font-mono text-sm font-bold ${pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                            {pnl >= 0 ? "+" : ""}{pnl.toFixed(4)}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="p-5">
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <p className="text-[9px] uppercase text-muted-foreground">Fonte</p>
+                      <p className="mt-1 font-mono text-xs font-bold">{analysisSource}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] uppercase text-muted-foreground">Ledger</p>
+                      <p className="mt-1 font-mono text-xs font-bold">{permanentLedger.trades} trades</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] uppercase text-muted-foreground">Net</p>
+                      <p className={`mt-1 font-mono text-xs font-bold ${permanentLedger.net >= 0 ? "text-green-400" : "text-red-400"}`}>
+                        {permanentLedger.net >= 0 ? "+" : ""}{permanentLedger.net.toFixed(4)}
+                      </p>
+                    </div>
+                  </div>
+                  <p className="mt-4 border-t border-border/30 pt-3 text-xs text-muted-foreground">
+                    O resumo permanente já chegou, mas o telemetry detalhado local ainda não tem fechamentos suficientes para montar ranking e gráficos.
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
 
         {isLoading ? (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
