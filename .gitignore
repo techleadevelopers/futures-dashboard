@@ -1,0 +1,17 @@
+# Local app folders that should not be committed from the repo root
+/backend/
+/quant-brain/
+
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+**/dist/
+*.tsbuildinfo
+
+# Environment files
+.env
+.env.*
+!.env.example
