@@ -27,6 +27,13 @@ import {
   FlaskConical,
   BrainCircuit,
 } from "lucide-react";
+import {
+  Line,
+  LineChart,
+  ReferenceLine,
+  ResponsiveContainer,
+  YAxis,
+} from "recharts";
 
 const NAV = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
@@ -38,6 +45,60 @@ const NAV = [
   { href: "/demo", label: "Demo Lab", icon: FlaskConical, highlight: true },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
+
+function MiniRiskChart({
+  changePct,
+  isLong,
+  isToxic,
+}: {
+  changePct: number;
+  isLong: boolean;
+  isToxic: boolean;
+}) {
+  const direction = changePct >= 0 ? 1 : -1;
+  const absChange = Math.max(Math.abs(changePct), 0.15);
+  const base = 100;
+  const data = [
+    { t: 1, price: base - direction * absChange * 0.42 },
+    { t: 2, price: base - direction * absChange * 0.08 },
+    { t: 3, price: base + direction * absChange * 0.2 },
+    { t: 4, price: base + direction * absChange * 0.04 },
+    { t: 5, price: base + direction * absChange * 0.48 },
+    { t: 6, price: base + direction * absChange },
+  ];
+  const stroke = isToxic
+    ? "rgb(248 113 113)"
+    : isLong
+    ? "rgb(74 222 128)"
+    : "rgb(251 113 133)";
+  const target = base + direction * absChange;
+  const stop = base - direction * absChange * 0.55;
+  const domainPad = absChange * 0.95;
+
+  return (
+    <div className="relative h-8 flex-1 min-w-0">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data} margin={{ top: 3, right: 2, bottom: 2, left: 2 }}>
+          <YAxis domain={[base - domainPad, base + domainPad]} hide />
+          <ReferenceLine y={base} stroke="hsl(var(--border))" strokeDasharray="2 2" strokeOpacity={0.5} />
+          <ReferenceLine y={target} stroke={stroke} strokeOpacity={0.28} />
+          <ReferenceLine y={stop} stroke="rgb(248 113 113)" strokeOpacity={0.22} />
+          <Line
+            type="monotone"
+            dataKey="price"
+            stroke={stroke}
+            strokeWidth={1.7}
+            dot={false}
+            isAnimationActive={false}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+      <span className={`absolute right-0 top-0 text-[8px] font-mono tabular-nums ${changePct >= 0 ? "text-green-400" : "text-red-400"}`}>
+        {changePct >= 0 ? "+" : ""}{changePct.toFixed(2)}%
+      </span>
+    </div>
+  );
+}
 
 function TargetRow({
   symbol,
@@ -77,13 +138,6 @@ function TargetRow({
     ? "bg-muted-foreground/40"
     : "bg-orange-400";
 
-  const barW = Math.round(priorityScore * 100);
-  const barColor = isToxic
-    ? "bg-red-500/60"
-    : isCandidate
-    ? "bg-green-400/70"
-    : "bg-primary/40";
-
   return (
     <div className="px-3 py-1.5 border-b border-border/10 last:border-0">
       <div className="flex items-center gap-2">
@@ -96,10 +150,12 @@ function TargetRow({
           {pUp ? "+" : ""}{priceChangePct.toFixed(2)}%
         </span>
       </div>
-      <div className="flex items-center gap-2 mt-1">
-        <div className="flex-1 h-1 bg-border/30 rounded-full overflow-hidden">
-          <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${barW}%` }} />
-        </div>
+      <div className="flex items-center gap-2 mt-0.5">
+        <MiniRiskChart
+          changePct={priceChangePct}
+          isLong={positionSide === "LONG"}
+          isToxic={isToxic}
+        />
         <span className="text-[9px] text-muted-foreground tabular-nums font-mono">
           {samples > 0 ? `${(ewmaWinRate * 100).toFixed(0)}%` : "—"}
         </span>
