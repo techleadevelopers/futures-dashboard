@@ -167,7 +167,7 @@ export default function IntelligencePage() {
   const { data: demoAnalysis } = useQuery<DemoAnalysisState>({
     queryKey: ["intelligence-demo-analysis-state"],
     queryFn: () => fetchDemoAnalysisState() as Promise<DemoAnalysisState>,
-    refetchInterval: 3_000,
+    refetchInterval: 10_000,
     placeholderData: (previousData) => previousData,
   });
   const { data: btcTicker } = useGetBingXTicker(
@@ -184,7 +184,7 @@ export default function IntelligencePage() {
   const query = useQuery({
     queryKey: ["bot-intelligence", symbol, side, intelligenceSource],
     queryFn: () => fetchIntelligence(symbol, side, btcChangePct, intelligenceSource),
-    refetchInterval: demoAnalysis?.connected ? 8_000 : 15_000,
+    refetchInterval: demoAnalysis?.connected ? 12_000 : 20_000,
     placeholderData: (previousData) => previousData,
     retry: 1,
   });
