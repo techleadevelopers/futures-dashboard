@@ -34,6 +34,8 @@ interface TelemetryOutcome {
   realizedPnl: number;
   grossPnl: number;
   fee: number;
+  pnlSource?: "balance_delta" | "price_estimate";
+  estimated?: boolean;
   exitReason?: "TP" | "SL" | "MANUAL";
 }
 
@@ -128,6 +130,13 @@ function formatClock(timestamp?: number) {
   return epochMs > 0 ? new Date(epochMs).toLocaleTimeString() : "--";
 }
 
+function outcomeReturnPct(outcome: TelemetryOutcome) {
+  const pnl = Number(outcome.realizedPnl || 0);
+  const margin = Number(outcome.marginUsed || 0);
+  if (!Number.isFinite(pnl) || !Number.isFinite(margin) || margin <= 0) return 0;
+  return (pnl / margin) * 100;
+}
+
 function GateRow({ label, pass, reason }: { label: string; pass: boolean; reason: string }) {
   return (
     <div className="flex items-center gap-3 py-2 border-b border-border/20 last:border-0">
@@ -171,7 +180,7 @@ export default function AnalysisPage() {
   const { data: demoAnalysis, isLoading: isLoadingDemoAnalysis } = useQuery({
     queryKey: ["demo-analysis-state"],
     queryFn: () => fetchDemoAnalysisState() as Promise<DemoAnalysisState>,
-    refetchInterval: 3000,
+    refetchInterval: 10_000,
     placeholderData: (previousData) => previousData,
   });
   const { data: liveTelemetry, isLoading: isLoadingLiveTelemetry } = useQuery({
@@ -184,7 +193,7 @@ export default function AnalysisPage() {
   const { data: telemetryExport = [] } = useQuery({
     queryKey: ["telemetry-export"],
     queryFn: () => fetchTelemetryExport() as Promise<TelemetryOutcome[]>,
-    refetchInterval: 5000,
+    refetchInterval: 30_000,
     placeholderData: (previousData) => previousData,
   });
 
@@ -222,6 +231,8 @@ export default function AnalysisPage() {
   const closedPositivePnl = closedPositive.reduce((sum, outcome) => sum + Number(outcome.realizedPnl || 0), 0);
   const closedNegativePnl = closedNegative.reduce((sum, outcome) => sum + Number(outcome.realizedPnl || 0), 0);
   const closedNetPnl = closedLedger.reduce((sum, outcome) => sum + Number(outcome.realizedPnl || 0), 0);
+  const closedMargin = closedLedger.reduce((sum, outcome) => sum + Number(outcome.marginUsed || 0), 0);
+  const closedNetReturnPct = closedMargin > 0 ? (closedNetPnl / closedMargin) * 100 : 0;
   const permanentLedger = useMemo(() => {
     const sources = extendedTelemetry?.quantTradeSummary?.sources ?? [];
     const selected = sources.filter((source) => analysisSource === "DEMO" ? source.isDemo : !source.isDemo);
@@ -241,9 +252,11 @@ export default function AnalysisPage() {
     positive: closedPositivePnl,
     negative: closedNegativePnl,
     net: closedNetPnl,
+    netReturnPct: closedNetReturnPct,
     sourceLabel: "telemetry detalhado",
   } : {
     ...permanentLedger,
+    netReturnPct: 0,
     sourceLabel: "Quant Brain",
   };
   const latestCloseTime = useMemo(() => {
@@ -451,7 +464,9 @@ export default function AnalysisPage() {
               <p className={`mt-1 font-mono text-2xl font-bold ${realizedLedger.net >= 0 ? "text-green-400" : "text-red-400"}`}>
                 {realizedLedger.net >= 0 ? "+" : ""}{realizedLedger.net.toFixed(4)}
               </p>
-              <p className="mt-1 text-[10px] text-muted-foreground">Fonte: {realizedLedger.sourceLabel}</p>
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                {closedLedger.length > 0 ? `${realizedLedger.netReturnPct >= 0 ? "+" : ""}${realizedLedger.netReturnPct.toFixed(2)}% sobre margem` : `Fonte: ${realizedLedger.sourceLabel}`}
+              </p>
             </div>
             <div>
               <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Amostra realizada</p>
@@ -540,7 +555,7 @@ export default function AnalysisPage() {
             <CardContent className="p-0">
               {recentOutcomes.length > 0 ? (
                 <div className="divide-y divide-border/30">
-                  <div className="grid grid-cols-[86px_1fr_74px_82px_92px] items-center gap-3 px-5 py-2 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <div className="grid grid-cols-[86px_1fr_74px_82px_128px] items-center gap-3 px-5 py-2 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
                     <span>Hora</span>
                     <span>Par / lado</span>
                     <span>Motivo</span>
@@ -553,8 +568,9 @@ export default function AnalysisPage() {
                     const qty = Number(outcome.qty || 0);
                     const entry = Number(outcome.entryPrice || 0);
                     const exit = Number(outcome.exitPrice || 0);
+                    const returnPct = outcomeReturnPct(outcome);
                     return (
-                      <div key={outcome.id} className="grid grid-cols-[86px_1fr_74px_82px_92px] items-center gap-3 px-5 py-3">
+                      <div key={outcome.id} className="grid grid-cols-[86px_1fr_74px_82px_128px] items-center gap-3 px-5 py-3">
                         <span className="font-mono text-[10px] text-muted-foreground">{formatClock(outcome.exitTime)}</span>
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
@@ -568,13 +584,16 @@ export default function AnalysisPage() {
                             entry {Number.isFinite(entry) && entry > 0 ? entry.toFixed(4) : "--"} / exit {Number.isFinite(exit) && exit > 0 ? exit.toFixed(4) : "--"}
                           </p>
                         </div>
-                        <Badge variant="outline" className="w-fit border-border/50 font-mono text-[9px]">
-                          {outcome.exitReason ?? "CLOSE"}
+                        <Badge variant="outline" className={`w-fit border-border/50 font-mono text-[9px] ${outcome.estimated ? "text-orange-300" : ""}`}>
+                          {outcome.estimated ? "EST" : outcome.exitReason ?? "CLOSE"}
                         </Badge>
                         <span className="font-mono text-xs text-orange-300">{Number.isFinite(fee) ? fee.toFixed(4) : "0.0000"}</span>
                         <div className="text-right">
                           <p className={`font-mono text-sm font-bold ${pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
-                            {pnl >= 0 ? "+" : ""}{pnl.toFixed(4)}
+                            {returnPct >= 0 ? "+" : ""}{returnPct.toFixed(2)}%
+                          </p>
+                          <p className={`mt-0.5 font-mono text-[10px] ${pnl >= 0 ? "text-green-300" : "text-red-300"}`}>
+                            {pnl >= 0 ? "+" : ""}{pnl.toFixed(4)} {analysisSource === "DEMO" ? "VST" : "USDT"}
                           </p>
                         </div>
                       </div>
