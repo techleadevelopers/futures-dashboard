@@ -1,0 +1,26 @@
+{
+  "contractVersion": "edge-v3",
+  "supportedFeatureVersions": ["sniper-v1", "candle-edge-v1"],
+  "probabilityDefinition": "probability_configured_target_hit_before_stop",
+  "scoreRange": [0, 1],
+  "timestampUnit": "unix_ms",
+  "maxPredictionAgeMs": 15000,
+  "maxMarketDataAgeMs": 30000,
+  "timeouts": {
+    "shadowEdgeMs": 2500,
+    "enforceEdgeMs": 8000,
+    "outcomeMs": 30000
+  },
+  "retries": {
+    "edge": 0,
+    "outcome": 1
+  },
+  "sides": {
+    "LONG": "BUY",
+    "SHORT": "SELL"
+  },
+  "unavailable": {
+    "score": null,
+    "calibratedProbability": null
+  }
+}
