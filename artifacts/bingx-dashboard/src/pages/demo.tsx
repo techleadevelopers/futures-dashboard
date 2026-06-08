@@ -20,7 +20,6 @@ import AppShell from "@/components/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { apiUrl } from "@/lib/api-url";
@@ -45,9 +44,10 @@ interface LogEntry {
   orderId?: string | null;
 }
 
-const AUTO_FIRE_MAX_PER_CYCLE = 1;
+const AUTO_FIRE_MAX_PER_CYCLE = 5;
 const AUTO_FIRE_MIN_INTERVAL_MS = 12_000;
 const AUTO_FIRE_SYMBOL_COOLDOWN_MS = 90_000;
+const AUTO_FIRE_REJECT_COOLDOWN_MS = 15_000;
 
 interface DemoRiskClose {
   symbol: string;
@@ -386,9 +386,6 @@ export default function DemoPage() {
   const riskClosingKeysRef = useRef<Set<string>>(new Set());
   const [sniperLoading, setSniperLoading] = useState(false);
   const [demoConnectLoading, setDemoConnectLoading] = useState(false);
-  const [demoAccountId, setDemoAccountId] = useState("");
-  const [demoApiKey, setDemoApiKey] = useState("");
-  const [demoSecretKey, setDemoSecretKey] = useState("");
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
 
   const { data: btcTicker } = useGetBingXTicker(
@@ -399,6 +396,12 @@ export default function DemoPage() {
   const { data: config } = useGetBotConfig({
     query: { queryKey: getGetBotConfigQueryKey(), refetchInterval: 60000 },
   });
+  const candleConfig = config as (typeof config & {
+    candleMinScore?: number;
+    candleMinSeparation?: number;
+  });
+  const candleMinScore = candleConfig?.candleMinScore ?? 0.5;
+  const candleMinSeparation = candleConfig?.candleMinSeparation ?? 0.08;
 
   const { data: demoStatus, refetch: refetchStatus } = useGetDemoStatus({
     query: {
@@ -439,8 +442,25 @@ export default function DemoPage() {
         stopReason: string | null;
         lastCycleAt: number | null;
         openTrades: number;
+        aggression?: {
+          aggressionState: "PAUSED" | "DEFENSIVE" | "NORMAL" | "BOOST" | "MAX_SNIPER";
+          reason: string;
+          maxCandidatesThisCycle: number;
+          maxPositionsThisCycle: number;
+          marginMultiplier: number;
+          stackingAllowed: boolean;
+          minAggressiveScore: number;
+          allowBurstMode: boolean;
+          metrics?: {
+            recentWinRate: number;
+            recentProfitFactor: number;
+            recentPnlUsdt: number;
+            hotSymbols: number;
+          };
+        };
         lastCycleSummary: {
           placed: number; skipped: number; scanned: number; btcRegime: string;
+          aggressionState?: string; aggressionReason?: string;
           placements: Array<{ symbol: string; positionSide: string; score: number; tier: number }>;
         } | null;
         config: { globalMax: number; perSymbolMax: number; cycleMs: number };
@@ -530,27 +550,14 @@ export default function DemoPage() {
   }
 
   async function handleConnect() {
-    if (!demoAccountId.trim() || !demoApiKey.trim() || !demoSecretKey.trim()) {
-      toast({ title: "Credenciais VST obrigatórias", variant: "destructive" });
-      return;
-    }
     setDemoConnectLoading(true);
     try {
       const response = await fetch(apiUrl("/api/demo/connect"), {
         method: "POST",
         credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          environment: "demo",
-          accountId: demoAccountId,
-          apiKey: demoApiKey,
-          secretKey: demoSecretKey,
-        }),
       });
       const data = await response.json() as { connected?: boolean; balance?: string; currency?: string; error?: string };
       if (!response.ok || !data.connected) throw new Error(data.error ?? "Credenciais VST inválidas");
-      setDemoApiKey("");
-      setDemoSecretKey("");
       setAutoFire(true);
       autoFiredKeysRef.current.clear();
       toast({ title: "Demo VST ativado", description: `Auto-Fire ligado · Balance: ${data.balance ?? "?"} ${data.currency ?? "VST"}` });
@@ -642,15 +649,18 @@ export default function DemoPage() {
         onSuccess: (result) => {
           addLog({ symbol, positionSide, placed: result.placed, observationMode: result.observationMode, gateRejects: result.gateRejects, message: result.message, orderId: result.orderId });
           if (result.placed) {
+            symbolCooldownRef.current.set(key, Date.now() + AUTO_FIRE_SYMBOL_COOLDOWN_MS);
             toast({ title: `Demo order placed`, description: `${positionSide} ${symbol}` });
             refetchStatus();
             refetchDemoPositions();
           } else {
             autoFiredKeysRef.current.delete(key);
+            symbolCooldownRef.current.set(key, Date.now() + AUTO_FIRE_REJECT_COOLDOWN_MS);
           }
         },
         onError: (error) => {
           autoFiredKeysRef.current.delete(key);
+          symbolCooldownRef.current.set(key, Date.now() + AUTO_FIRE_REJECT_COOLDOWN_MS);
           const errorLog = getOrderErrorLog(error);
           addLog({
             symbol,
@@ -771,21 +781,34 @@ export default function DemoPage() {
 
     const edgeBySymbol = new Map(
       (edge?.symbols ?? [])
-        .filter((s) => s.symbol && s.combined?.bestSide && s.combined.bestSide !== "NEUTRAL")
+        .filter((s) => s.symbol && s.market?.suggestedSide && s.market.suggestedSide !== "NEUTRAL")
         .map((s) => [s.symbol!, s]),
     );
 
     const candidates = scan.symbols
       .map((s) => {
         const edgeSymbol = edgeBySymbol.get(s.symbol);
-        const bestSide = edgeSymbol?.combined?.bestSide;
+        const bestSide = edgeSymbol?.market?.suggestedSide;
         const edgeScore = bestSide === "LONG"
-          ? edgeSymbol?.combined?.longScore ?? 0
+          ? edgeSymbol?.market?.longScore ?? 0
           : bestSide === "SHORT"
-            ? edgeSymbol?.combined?.shortScore ?? 0
+            ? edgeSymbol?.market?.shortScore ?? 0
+            : 0;
+        const oppositeScore = bestSide === "LONG"
+          ? edgeSymbol?.market?.shortScore ?? 0
+          : bestSide === "SHORT"
+            ? edgeSymbol?.market?.longScore ?? 0
             : 0;
 
-        return { ...s, edgeScore, edgeAgrees: bestSide === s.positionSide };
+        return {
+          ...s,
+          edgeScore,
+          edgeAgrees: bestSide === s.positionSide,
+          edgeSeparation: edgeScore - oppositeScore,
+          edgeRangeBlocked:
+            edgeSymbol?.market?.emaCross === "FLAT"
+            && (edgeSymbol?.market?.volumeRatio ?? 0) < 1.1,
+        };
       })
       .filter((s) => {
         const key = `${s.symbol}-${s.positionSide}`;
@@ -796,8 +819,11 @@ export default function DemoPage() {
         if (openPositionKeys.has(key)) return false;
         if (firingSet.has(key)) return false;
         if (autoFiredKeysRef.current.has(key)) return false;
-        if (edgeBySymbol.size === 0) return true;
-        return s.edgeAgrees && s.edgeScore > 0.01;
+        if (edgeBySymbol.size === 0) return false;
+        return s.edgeAgrees
+          && s.edgeScore >= candleMinScore
+          && s.edgeSeparation >= candleMinSeparation
+          && !s.edgeRangeBlocked;
       })
       .sort((a, b) => {
         if (b.edgeScore !== a.edgeScore) return b.edgeScore - a.edgeScore;
@@ -810,10 +836,19 @@ export default function DemoPage() {
       const now = Date.now();
       autoFiredKeysRef.current.add(key);
       lastAutoFireAtRef.current = now;
-      symbolCooldownRef.current.set(key, now + AUTO_FIRE_SYMBOL_COOLDOWN_MS);
       fireDemoOrder(s.symbol, s.positionSide as "LONG" | "SHORT", s.ev, s.ewmaWinRate, true, s.lastPrice);
     });
-  }, [scan?.scanTime, edge?.edgeTime, autoFire, demoConnected, visibleDemoPositions.length, config?.maxConcurrentPositions]);
+  }, [
+    scan?.scanTime,
+    edge?.edgeTime,
+    autoFire,
+    demoConnected,
+    visibleDemoPositions,
+    firingSet,
+    config?.maxConcurrentPositions,
+    candleMinScore,
+    candleMinSeparation,
+  ]);
 
   const scanSymbols = scan?.symbols ?? [];
   const candidates = scanSymbols.filter(s => s.isCandidate);
@@ -881,8 +916,8 @@ export default function DemoPage() {
                     Ativar Modo Demo VST
                   </CardTitle>
                   <p className="text-[10px] text-muted-foreground mt-1 leading-relaxed">
-                    Use credenciais exclusivas da conta Demo Trading. Elas nunca são copiadas da conexão live e
-                    somente podem acessar <span className="font-mono">open-api-vst.bingx.com</span>.
+                    Usa automaticamente a API Key e Secret informadas no login. O servidor testa essas
+                    credenciais somente em <span className="font-mono">open-api-vst.bingx.com</span>.
                   </p>
                 </CardHeader>
                 <CardContent className="px-4 pb-4 space-y-3">
@@ -893,27 +928,6 @@ export default function DemoPage() {
                       (Futuros → Demo Trading) antes de conectar.
                     </p>
                   </div>
-                  <Input
-                    value={demoAccountId}
-                    onChange={(event) => setDemoAccountId(event.target.value)}
-                    placeholder="ID da conta demo"
-                    autoComplete="off"
-                  />
-                  <Input
-                    value={demoApiKey}
-                    onChange={(event) => setDemoApiKey(event.target.value)}
-                    placeholder="API Key VST"
-                    autoComplete="off"
-                    className="font-mono"
-                  />
-                  <Input
-                    value={demoSecretKey}
-                    onChange={(event) => setDemoSecretKey(event.target.value)}
-                    placeholder="Secret Key VST"
-                    type="password"
-                    autoComplete="new-password"
-                    className="font-mono"
-                  />
                   <Button
                     className="w-full bg-blue-600 hover:bg-blue-500 text-white"
                     size="sm"
@@ -924,7 +938,7 @@ export default function DemoPage() {
                       ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-2" />
                       : <Radio className="w-3.5 h-3.5 mr-2" />
                     }
-                    Ativar Demo VST
+                    Entrar no Demo VST
                   </Button>
                 </CardContent>
               </Card>
@@ -1126,6 +1140,40 @@ export default function DemoPage() {
                       ))}
                     </div>
                   ) : null}
+
+                  {sniperStatus?.aggression && (
+                    <div className="rounded-md border border-border/15 bg-muted/10 p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[9px] text-muted-foreground uppercase tracking-wider font-semibold">Aggression</span>
+                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold ${
+                          sniperStatus.aggression.aggressionState === "MAX_SNIPER" ? "bg-fuchsia-500/15 text-fuchsia-300"
+                          : sniperStatus.aggression.aggressionState === "BOOST" ? "bg-green-500/15 text-green-400"
+                          : sniperStatus.aggression.aggressionState === "DEFENSIVE" ? "bg-amber-500/15 text-amber-300"
+                          : sniperStatus.aggression.aggressionState === "PAUSED" ? "bg-red-500/15 text-red-400"
+                          : "bg-muted/20 text-muted-foreground"
+                        }`}>
+                          {sniperStatus.aggression.aggressionState}
+                        </span>
+                      </div>
+                      <div className="mt-2 grid grid-cols-4 gap-1.5">
+                        {[
+                          ["Cand", sniperStatus.aggression.maxCandidatesThisCycle],
+                          ["Pos", sniperStatus.aggression.maxPositionsThisCycle],
+                          ["Margin", `${sniperStatus.aggression.marginMultiplier.toFixed(2)}x`],
+                          ["Score", sniperStatus.aggression.minAggressiveScore.toFixed(2)],
+                        ].map(([label, value]) => (
+                          <div key={String(label)} className="text-center">
+                            <div className="font-mono text-[11px] font-bold">{value}</div>
+                            <div className="text-[7px] uppercase tracking-wider text-muted-foreground">{label}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-2 flex items-center justify-between gap-2 text-[8px] text-muted-foreground">
+                        <span>{sniperStatus.aggression.stackingAllowed ? "Stacking on" : "Stacking off"}</span>
+                        <span className="truncate text-right">{sniperStatus.aggression.reason.replaceAll("_", " ")}</span>
+                      </div>
+                    </div>
+                  )}
 
                   {sniperStatus?.lastCycleSummary && (
                     <div className="space-y-1.5">
@@ -1433,76 +1481,6 @@ export default function DemoPage() {
       </div>
     </div>
   </CardHeader>
-
-  {/* Open PnL Section */}
-  {demoConnected && (
-    <div className="border-b border-border/20 shrink-0">
-      <div className="px-4 py-2.5 flex items-center justify-between bg-muted/5">
-        <div className="flex items-center gap-2">
-          <TrendingUp className="w-3.5 h-3.5 text-primary" />
-          <span className="text-xs font-semibold">Open PnL</span>
-        </div>
-        <span className="text-[9px] text-muted-foreground font-mono">
-          {visibleDemoPositions.length} active
-        </span>
-      </div>
-      {visibleDemoPositions.length === 0 ? (
-        <div className="px-4 py-4 text-center text-[10px] text-muted-foreground">
-          Nenhuma posição aberta
-        </div>
-      ) : (
-        <div className="max-h-[200px] overflow-y-auto">
-          {visibleDemoPositions.map((position) => {
-            const getIconUrl = (symbol: string) => {
-              const base = symbol.replace("-USDT", "").replace("-USD", "").toLowerCase();
-              const icons: Record<string, string> = {
-                btc: "https://cryptologos.cc/logos/bitcoin-btc-logo.svg",
-                eth: "https://cryptologos.cc/logos/ethereum-eth-logo.svg",
-                sol: "https://cryptologos.cc/logos/solana-sol-logo.svg",
-              };
-              return icons[base] || null;
-            };
-
-            const iconUrl = getIconUrl(position.symbol);
-            const isLong = position.positionSide === "LONG";
-            const pnl = parseFloat(position.unrealizedProfit || "0");
-            const pnlFormatted = pnl.toFixed(4);
-            const shortSym = position.symbol.replace("-USDT", "").replace("-USD", "");
-            const qty = parseFloat((position as any).positionAmt || (position as any).size || "0");
-
-            return (
-              <div key={`${position.symbol}-${position.positionSide}-mini`} className="px-4 py-2.5 border-b border-border/10 last:border-0 hover:bg-muted/10 transition-colors">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    {iconUrl ? (
-                      <img 
-                        src={iconUrl} 
-                        alt={shortSym} 
-                        className="w-4 h-4"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).style.display = 'none';
-                        }}
-                      />
-                    ) : (
-                      <div className="w-4 h-4" />
-                    )}
-                    <span className="text-xs font-mono font-semibold">{shortSym}</span>
-                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${isLong ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>
-                      {isLong ? "LONG" : "SHORT"}
-                    </span>
-                    <span className="text-[9px] text-muted-foreground font-mono">{qty.toFixed(4)}</span>
-                  </div>
-                  <span className={`text-xs font-mono font-bold ${pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
-                    {pnl >= 0 ? "+" : ""}{pnlFormatted}
-                  </span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  )}
 
   {/* Log entries */}
   <div ref={logRef} className="flex-1 overflow-y-auto min-h-[200px]">
