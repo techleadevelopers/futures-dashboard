@@ -10,12 +10,16 @@ import {
   Gauge,
   RefreshCw,
   ShieldAlert,
+  ShieldCheck,
+  ShieldOff,
   Target,
   TrendingDown,
   TrendingUp,
   Wifi,
   WifiOff,
   XCircle,
+  BarChart2,
+  Pause,
 } from "lucide-react";
 import {
   getGetBingXTickerQueryKey,
@@ -33,6 +37,169 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 
 type Side = "LONG" | "SHORT";
 type AnyRecord = Record<string, any>;
+
+interface SentimentIndicators {
+  vwapDeviation: number;
+  volumeDelta: number;
+  momentum4h: number;
+  momentum24h: number;
+  ema12vs24: string;
+  rangePosition: number;
+  bodyBias: number;
+  volumeTrend: string;
+  highLowBreak: string;
+}
+
+interface SentimentResult {
+  symbol: string;
+  direction: "BULL" | "BEAR" | "NEUTRAL";
+  confidence: number;
+  biasRatio: number;
+  dominantSide: "LONG" | "SHORT" | "NEUTRAL";
+  entryBias: { longWeight: number; shortWeight: number };
+  indicators: SentimentIndicators;
+  candles24h: number;
+  fetchedAt: number;
+  error?: string;
+}
+
+async function fetchSentiment(symbol: string): Promise<SentimentResult> {
+  const res = await fetch(apiUrl(`/api/bot/sentiment?symbol=${encodeURIComponent(symbol)}`), {
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(`Sentiment HTTP ${res.status}`);
+  return await res.json() as SentimentResult;
+}
+
+function SentimentPanel({ symbol }: { symbol: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["sentiment", symbol],
+    queryFn: () => fetchSentiment(symbol),
+    refetchInterval: 5 * 60 * 1000,
+    placeholderData: (prev) => prev,
+    retry: 1,
+  });
+
+  if (isLoading && !data) {
+    return (
+      <section className="border border-border/50 bg-card/25 p-4">
+        <div className="flex items-center gap-2 mb-4">
+          <BarChart2 className="h-4 w-4 text-primary" />
+          <h2 className="text-sm font-semibold">Sentimento 24h · Viés Direcional</h2>
+        </div>
+        <Skeleton className="h-20 w-full" />
+      </section>
+    );
+  }
+
+  if (!data) return null;
+
+  const { direction, confidence, biasRatio, entryBias, indicators, error } = data;
+  const dirColor = direction === "BULL" ? "text-green-400" : direction === "BEAR" ? "text-red-400" : "text-amber-400";
+  const dirBg = direction === "BULL" ? "bg-green-500/10 border-green-500/30" : direction === "BEAR" ? "bg-red-500/10 border-red-500/30" : "bg-amber-500/10 border-amber-500/30";
+  const longPct = Math.round(entryBias.longWeight * 100);
+  const shortPct = 100 - longPct;
+
+  const bars: { label: string; value: number; unit: string; bullish: boolean }[] = [
+    { label: "Desvio VWAP", value: indicators.vwapDeviation, unit: "%", bullish: indicators.vwapDeviation >= 0 },
+    { label: "Delta vol", value: indicators.volumeDelta * 100, unit: "%", bullish: indicators.volumeDelta >= 0 },
+    { label: "Mom 4h", value: indicators.momentum4h, unit: "%", bullish: indicators.momentum4h >= 0 },
+    { label: "Mom 24h", value: indicators.momentum24h, unit: "%", bullish: indicators.momentum24h >= 0 },
+    { label: "Bias body", value: indicators.bodyBias * 100, unit: "%", bullish: indicators.bodyBias >= 0 },
+  ];
+
+  return (
+    <section className={`border p-4 ${dirBg}`}>
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <BarChart2 className="h-4 w-4 text-primary" />
+        <h2 className="text-sm font-semibold">Sentimento 24h · Viés Direcional</h2>
+        <Badge variant="outline" className={`font-mono font-bold ${dirColor}`}>{direction}</Badge>
+        <span className="text-xs text-muted-foreground ml-1">confiança {(confidence * 100).toFixed(0)}%</span>
+        {error && <span className="text-[9px] text-amber-400 ml-auto font-mono">⚠ {error}</span>}
+      </div>
+
+      <div className="grid gap-5 sm:grid-cols-[1fr_1.2fr]">
+        {/* Bias distribution bar */}
+        <div>
+          <p className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">Distribuição de entradas recomendada</p>
+          <div className="flex h-8 w-full overflow-hidden rounded-md border border-border/40">
+            <div
+              className="flex items-center justify-center bg-green-500/25 text-[11px] font-bold text-green-400 transition-all"
+              style={{ width: `${longPct}%` }}
+            >
+              {longPct >= 20 ? `${longPct}% L` : ""}
+            </div>
+            <div
+              className="flex items-center justify-center bg-red-500/25 text-[11px] font-bold text-red-400 transition-all"
+              style={{ width: `${shortPct}%` }}
+            >
+              {shortPct >= 20 ? `${shortPct}% S` : ""}
+            </div>
+          </div>
+          <div className="flex justify-between mt-1.5">
+            <span className="font-mono text-[10px] text-green-400">{longPct}% LONG</span>
+            <span className="font-mono text-[10px] text-red-400">{shortPct}% SHORT</span>
+          </div>
+          <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+            <div className="border border-border/30 rounded p-2">
+              <p className="text-[8px] uppercase text-muted-foreground">EMA 12/24</p>
+              <p className={`font-mono text-xs font-bold ${indicators.ema12vs24 === "BULL" ? "text-green-400" : indicators.ema12vs24 === "BEAR" ? "text-red-400" : "text-muted-foreground"}`}>
+                {indicators.ema12vs24}
+              </p>
+            </div>
+            <div className="border border-border/30 rounded p-2">
+              <p className="text-[8px] uppercase text-muted-foreground">Posição</p>
+              <p className="font-mono text-xs font-bold">{(indicators.rangePosition * 100).toFixed(0)}%</p>
+              <p className="text-[7px] text-muted-foreground">{indicators.rangePosition > 0.65 ? "topo" : indicators.rangePosition < 0.35 ? "fundo" : "meio"}</p>
+            </div>
+            <div className="border border-border/30 rounded p-2">
+              <p className="text-[8px] uppercase text-muted-foreground">Vol trend</p>
+              <p className={`font-mono text-xs font-bold ${indicators.volumeTrend === "RISING" ? "text-green-400" : indicators.volumeTrend === "FALLING" ? "text-red-400" : "text-muted-foreground"}`}>
+                {indicators.volumeTrend === "RISING" ? "↑" : indicators.volumeTrend === "FALLING" ? "↓" : "—"} {indicators.volumeTrend}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Indicator bars */}
+        <div className="space-y-2">
+          {bars.map((bar) => {
+            const absVal = Math.abs(bar.value);
+            const pct = Math.min(100, absVal * 5);
+            return (
+              <div key={bar.label}>
+                <div className="flex justify-between mb-0.5">
+                  <span className="text-[10px] text-muted-foreground">{bar.label}</span>
+                  <span className={`font-mono text-[10px] font-bold ${bar.bullish ? "text-green-400" : "text-red-400"}`}>
+                    {bar.value >= 0 ? "+" : ""}{bar.value.toFixed(3)}{bar.unit}
+                  </span>
+                </div>
+                <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-muted/30">
+                  <div
+                    className={`h-full rounded-full ${bar.bullish ? "bg-green-500/60" : "bg-red-500/60"}`}
+                    style={{ width: `${pct}%`, marginLeft: bar.bullish ? "50%" : `${50 - pct / 2}%`, maxWidth: "50%" }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+          <div className="mt-1">
+            <div className="flex justify-between mb-0.5">
+              <span className="text-[10px] text-muted-foreground">Breakout</span>
+              <span className={`font-mono text-[10px] font-bold ${indicators.highLowBreak === "BREAKOUT_UP" ? "text-green-400" : indicators.highLowBreak === "BREAKOUT_DOWN" ? "text-red-400" : "text-muted-foreground"}`}>
+                {indicators.highLowBreak === "BREAKOUT_UP" ? "↑ BREAKOUT UP" : indicators.highLowBreak === "BREAKOUT_DOWN" ? "↓ BREAKOUT DOWN" : "RANGE BOUND"}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <p className="mt-3 text-[9px] text-muted-foreground">
+        Baseado em {data.candles24h} candles 1h · {data.fetchedAt ? new Date(data.fetchedAt).toLocaleTimeString() : "--"} · Cache 5min
+      </p>
+    </section>
+  );
+}
 
 interface IntelligenceResponse {
   symbol: string;
@@ -93,6 +260,118 @@ function pct(value: unknown, digits = 2) {
 
 function num(value: unknown, digits = 3) {
   return Number(value ?? 0).toFixed(digits);
+}
+
+// ─── Service State Panel ──────────────────────────────────────────────────────
+
+interface ServiceStateSnapshot {
+  state: "HEALTHY" | "DEGRADED" | "SHADOW_ONLY" | "PAUSED";
+  reason: string | null;
+  since: number;
+  qbFailures: number;
+  apiErrors: number;
+  consecutiveLosses: number;
+  rollingLossPnl: number;
+  lastBtcPriceAt: number | null;
+  staleDataThresholdMs: number;
+  history: Array<{ state: string; reason: string | null; at: number }>;
+}
+
+function ServiceStatePanel() {
+  const { data, isLoading, dataUpdatedAt } = useQuery<ServiceStateSnapshot>({
+    queryKey: ["service-state"],
+    queryFn: async () => {
+      const res = await fetch(apiUrl("/api/service-state"), { credentials: "include" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json() as Promise<ServiceStateSnapshot>;
+    },
+    refetchInterval: 5_000,
+    placeholderData: (prev) => prev,
+    retry: 2,
+  });
+
+  const stateColors: Record<string, string> = {
+    HEALTHY: "text-green-400 border-green-500/40 bg-green-500/8",
+    DEGRADED: "text-amber-400 border-amber-500/40 bg-amber-500/8",
+    SHADOW_ONLY: "text-orange-400 border-orange-500/40 bg-orange-500/8",
+    PAUSED: "text-red-400 border-red-500/40 bg-red-500/8",
+  };
+  const stateIcon: Record<string, React.ReactNode> = {
+    HEALTHY: <ShieldCheck className="h-3.5 w-3.5" />,
+    DEGRADED: <ShieldAlert className="h-3.5 w-3.5" />,
+    SHADOW_ONLY: <ShieldOff className="h-3.5 w-3.5" />,
+    PAUSED: <Pause className="h-3.5 w-3.5" />,
+  };
+
+  const state = data?.state ?? "HEALTHY";
+  const colorClass = stateColors[state] ?? stateColors.HEALTHY;
+  const icon = stateIcon[state] ?? stateIcon.HEALTHY;
+
+  const btcAgeMs = data?.lastBtcPriceAt ? Date.now() - data.lastBtcPriceAt : null;
+  const btcStale = btcAgeMs !== null && data?.staleDataThresholdMs ? btcAgeMs > data.staleDataThresholdMs : false;
+
+  return (
+    <section className={`border p-4 ${colorClass}`}>
+      <div className="mb-3 flex items-center gap-2">
+        {icon}
+        <h2 className="text-sm font-semibold">Estado do serviço</h2>
+        {isLoading && <RefreshCw className="ml-auto h-3 w-3 animate-spin text-muted-foreground" />}
+        {!isLoading && dataUpdatedAt > 0 && (
+          <span className="ml-auto text-[9px] text-muted-foreground font-mono">
+            {new Date(dataUpdatedAt).toLocaleTimeString()}
+          </span>
+        )}
+      </div>
+
+      {!data ? (
+        <p className="text-[10px] text-muted-foreground">Carregando...</p>
+      ) : (
+        <div className="space-y-2">
+          <div className="flex justify-between text-xs">
+            <span className="text-muted-foreground">Estado</span>
+            <span className={`font-mono font-bold ${colorClass.split(" ")[0]}`}>{state}</span>
+          </div>
+          {data.reason && (
+            <div className="flex justify-between text-xs">
+              <span className="text-muted-foreground">Motivo</span>
+              <span className="font-mono uppercase text-[10px]">{data.reason}</span>
+            </div>
+          )}
+          <div className="flex justify-between text-xs">
+            <span className="text-muted-foreground">QB falhas (5min)</span>
+            <span className={`font-mono ${data.qbFailures >= 3 ? "text-amber-400" : ""}`}>{data.qbFailures}</span>
+          </div>
+          <div className="flex justify-between text-xs">
+            <span className="text-muted-foreground">Perdas seguidas</span>
+            <span className={`font-mono ${data.consecutiveLosses >= 4 ? "text-red-400" : ""}`}>{data.consecutiveLosses}</span>
+          </div>
+          <div className="flex justify-between text-xs">
+            <span className="text-muted-foreground">PnL acumulado</span>
+            <span className={`font-mono ${data.rollingLossPnl < 0 ? "text-red-400" : "text-green-400"}`}>
+              {data.rollingLossPnl >= 0 ? "+" : ""}${data.rollingLossPnl.toFixed(2)}
+            </span>
+          </div>
+          <div className="flex justify-between text-xs">
+            <span className="text-muted-foreground">BTC price age</span>
+            <span className={`font-mono ${btcStale ? "text-red-400" : "text-muted-foreground"}`}>
+              {btcAgeMs !== null ? `${(btcAgeMs / 1000).toFixed(0)}s` : "n/a"}
+              {btcStale && " ⚠ STALE"}
+            </span>
+          </div>
+          {(state === "SHADOW_ONLY" || state === "PAUSED") && (
+            <div className="mt-2 rounded border border-red-500/30 bg-red-500/5 p-2 text-[10px] text-red-400">
+              ⛔ Novas entradas bloqueadas — use POST /api/service-state/reset para recuperar
+            </div>
+          )}
+          {state === "DEGRADED" && (
+            <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/5 p-2 text-[10px] text-amber-400">
+              ⚠ Execução degradada — monitorando falhas
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function StatusBadge({ ok, on, off }: { ok: boolean; on: string; off: string }) {
@@ -224,6 +503,30 @@ export default function IntelligencePage() {
   const targetHit = Number(signalEdge?.context?.hit_configured ?? signalEdge?.symbolSide?.hit_configured ?? 0);
   const openDemoPnl = Number(demoAnalysis?.openUnrealizedPnl ?? 0);
 
+  const samplesPerHour = (() => {
+    const cycles = Number(sampler.cycles ?? 0);
+    const recorded = Number(sampler.recorded ?? 0);
+    const interval = Number(sampler.intervalSeconds ?? 60);
+    return cycles > 0 ? Math.round((recorded / cycles) * (3600 / interval)) : 0;
+  })();
+  const pendingSamples = Number((shadow.signalPipeline ?? {}).pending ?? 0);
+  const etaLabel = (() => {
+    if (shadow.available) return null;
+    if (trainingSamples + pendingSamples >= minimumTrainingSamples) return "<5 min";
+    if (samplesPerHour <= 0) return null;
+    const samplesNeeded = Math.max(0, minimumTrainingSamples - trainingSamples - pendingSamples);
+    const h = samplesNeeded / samplesPerHour;
+    if (h < 1 / 6) return "<10 min";
+    if (h < 1) return `~${Math.round(h * 60)} min`;
+    return `~${h.toFixed(1)} h`;
+  })();
+  const optimalThreshold = Number(shadow.optimalThreshold ?? 0);
+  const expectedValuePct = Number(shadow.expectedValuePct ?? 0);
+  const profitabilityVerified = Boolean(shadow.profitabilityVerified);
+  const simulatedWinRate = Number(shadow.simulatedWinRate ?? 0);
+  const breakevenWinRate = Number(shadow.breakevenWinRate ?? 0);
+  const dataQualityScore = Number((shadow.dataQuality as AnyRecord | undefined)?.score ?? 0);
+
   const lastUpdated = useMemo(() => {
     if (!quant?.checkedAt) return "--";
     return new Date(quant.checkedAt).toLocaleTimeString();
@@ -285,6 +588,8 @@ export default function IntelligencePage() {
             <span className="font-mono text-[10px] text-muted-foreground">{lastUpdated}</span>
           </div>
         </header>
+
+        <SentimentPanel symbol={symbol} />
 
         {demoAnalysis?.connected && (
           <section className="grid grid-cols-1 gap-3 border border-blue-500/25 bg-blue-500/5 p-4 sm:grid-cols-3">
@@ -468,29 +773,111 @@ export default function IntelligencePage() {
                   <h2 className="text-sm font-semibold">Shadow ML</h2>
                   <StatusBadge
                     ok={Boolean(shadow.available)}
-                    on="Disponível"
+                    on={shadow.quality === "excellent" ? "Excelente" : shadow.quality === "good" ? "Bom" : "Disponível"}
                     off={trainingSamples < minimumTrainingSamples ? "Coletando" : "Sem modelo"}
                   />
                 </div>
                 <div className="space-y-3">
-                  <div className="flex justify-between text-xs"><span className="text-muted-foreground">Probabilidade</span><span className="font-mono">{(modelProbability * 100).toFixed(1)}%</span></div>
-                  <Progress value={shadow.available ? modelProbability * 100 : trainingProgress} />
-                  <div className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">Amostras</span>
-                    <span className="font-mono">{trainingSamples}/{minimumTrainingSamples}</span>
+                  {/* Progress bar */}
+                  <div>
+                    <div className="mb-1 flex justify-between text-xs">
+                      <span className="text-muted-foreground">Amostras</span>
+                      <span className="font-mono">{trainingSamples}/{minimumTrainingSamples}</span>
+                    </div>
+                    <Progress value={shadow.available ? Math.min(100, modelProbability * 100) : trainingProgress} />
                   </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">Classes</span>
-                    <span className="font-mono">{shadow.hits ?? 0} hit · {shadow.misses ?? 0} miss</span>
+
+                  {/* Pipeline: pending → finalized → treináveis */}
+                  <div className="grid grid-cols-3 gap-1 rounded bg-muted/20 p-2 text-center">
+                    <div>
+                      <div className="font-mono text-xs font-semibold">{shadow.signalPipeline?.pending ?? 0}</div>
+                      <div className="text-[9px] text-muted-foreground">Pendentes</div>
+                    </div>
+                    <div>
+                      <div className="font-mono text-xs font-semibold">{shadow.signalPipeline?.finalized ?? 0}</div>
+                      <div className="text-[9px] text-muted-foreground">Finalizados</div>
+                    </div>
+                    <div>
+                      <div className="font-mono text-xs font-semibold">{trainingSamples}</div>
+                      <div className="text-[9px] text-muted-foreground">Treináveis</div>
+                    </div>
                   </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">Observados</span>
-                    <span className="font-mono">
-                      {shadow.signalPipeline?.observed ?? 0} · {shadow.signalPipeline?.pending ?? 0} pendentes
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-xs"><span className="text-muted-foreground">AUC</span><span className="font-mono">{num(shadow.rocAuc, 3)}</span></div>
-                  <div className="flex justify-between text-xs"><span className="text-muted-foreground">Baseline</span><span className={shadow.improvesBaseline ? "text-green-400" : "text-amber-400"}>{shadow.improvesBaseline ? "SUPERADO" : "PENDENTE"}</span></div>
+
+                  {/* Pre-training: velocity + ETA */}
+                  {!shadow.available && (
+                    <>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-muted-foreground">Velocidade</span>
+                        <span className="font-mono">{samplesPerHour > 0 ? `${samplesPerHour}/h` : "--"}</span>
+                      </div>
+                      {etaLabel && (
+                        <div className="flex justify-between text-xs">
+                          <span className="text-muted-foreground">ETA treino</span>
+                          <span className="font-mono text-amber-400">{etaLabel}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between text-xs">
+                        <span className="text-muted-foreground">Classes</span>
+                        <span className="font-mono">{shadow.hits ?? 0} hit · {shadow.misses ?? 0} miss</span>
+                      </div>
+                    </>
+                  )}
+
+                  {/* Post-training: profitability metrics */}
+                  {shadow.available && (
+                    <>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-muted-foreground">AUC ROC</span>
+                        <span className="font-mono">{num(shadow.rocAuc, 3)}</span>
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-muted-foreground">Threshold ótimo</span>
+                        <span className="font-mono">{optimalThreshold > 0 ? `${(optimalThreshold * 100).toFixed(0)}%` : "--"}</span>
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-muted-foreground">EV simulado</span>
+                        <span className={`font-mono ${expectedValuePct > 0 ? "text-green-400" : expectedValuePct < 0 ? "text-red-400" : "text-muted-foreground"}`}>
+                          {optimalThreshold > 0 ? `${expectedValuePct >= 0 ? "+" : ""}${(expectedValuePct * 100).toFixed(3)}%` : "--"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-muted-foreground">Win rate / breakeven</span>
+                        <span className="font-mono">
+                          {simulatedWinRate > 0
+                            ? `${(simulatedWinRate * 100).toFixed(1)}% / ${(breakevenWinRate * 100).toFixed(1)}%`
+                            : "--"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-muted-foreground">Edge lucrativo</span>
+                        <span className={profitabilityVerified ? "font-semibold text-green-400" : "text-amber-400"}>
+                          {profitabilityVerified ? "✓ VERIFICADO" : "NÃO VERIFICADO"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-muted-foreground">Baseline</span>
+                        <span className={shadow.improvesBaseline ? "text-green-400" : "text-amber-400"}>
+                          {shadow.improvesBaseline ? "SUPERADO" : "PENDENTE"}
+                        </span>
+                      </div>
+                    </>
+                  )}
+
+                  {/* Data quality (always shown when > 0) */}
+                  {dataQualityScore > 0 && (
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">Qualidade dados</span>
+                      <div className="flex items-center gap-1.5">
+                        <div className="h-1.5 w-16 rounded-full bg-muted/40">
+                          <div
+                            className={`h-full rounded-full ${dataQualityScore >= 70 ? "bg-green-500" : dataQualityScore >= 40 ? "bg-amber-500" : "bg-red-500"}`}
+                            style={{ width: `${dataQualityScore}%` }}
+                          />
+                        </div>
+                        <span className="font-mono">{dataQualityScore}/100</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </section>
 
@@ -532,6 +919,8 @@ export default function IntelligencePage() {
                   <div className="flex justify-between text-xs"><span className="text-muted-foreground">Hora UTC</span><span className="flex items-center gap-1 font-mono"><Clock3 className="h-3 w-3" />{data?.hourUtc}:00</span></div>
                 </div>
               </section>
+
+              <ServiceStatePanel />
             </div>
 
             {quant && Object.keys(quant.errors).length > 0 && (
