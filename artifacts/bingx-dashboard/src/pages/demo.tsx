@@ -7,7 +7,6 @@ import {
   useGetBotEdge,
   useGetBotScan,
   useGetDemoStatus,
-  useConnectDemo,
   useDisconnectDemo,
   usePlaceDemoOrder,
   useCloseDemoPosition,
@@ -21,6 +20,7 @@ import AppShell from "@/components/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { apiUrl } from "@/lib/api-url";
@@ -385,6 +385,10 @@ export default function DemoPage() {
   const symbolCooldownRef = useRef<Map<string, number>>(new Map());
   const riskClosingKeysRef = useRef<Set<string>>(new Set());
   const [sniperLoading, setSniperLoading] = useState(false);
+  const [demoConnectLoading, setDemoConnectLoading] = useState(false);
+  const [demoAccountId, setDemoAccountId] = useState("");
+  const [demoApiKey, setDemoApiKey] = useState("");
+  const [demoSecretKey, setDemoSecretKey] = useState("");
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
 
   const { data: btcTicker } = useGetBingXTicker(
@@ -502,7 +506,6 @@ export default function DemoPage() {
     }
   );
 
-  const connectMutation = useConnectDemo();
   const disconnectMutation = useDisconnectDemo();
   const orderMutation = usePlaceDemoOrder();
   const closeMutation = useCloseDemoPosition();
@@ -526,23 +529,41 @@ export default function DemoPage() {
     }, ...prev].slice(0, 200));
   }
 
-  function handleConnect() {
-    connectMutation.mutate(
-      undefined,
-      {
-        onSuccess: (data) => {
-          if (data.connected) {
-            setAutoFire(true);
-            autoFiredKeysRef.current.clear();
-            toast({ title: "Demo VST ativado", description: `Auto-Fire ligado · Balance: ${data.balance ?? "?"} ${data.currency ?? "VST"}` });
-            refetchStatus();
-          } else {
-            toast({ title: "Falha ao conectar", description: data.error ?? "Verifique se sua conta BingX está conectada", variant: "destructive" });
-          }
-        },
-        onError: () => toast({ title: "Erro", description: "Não foi possível ativar o modo demo", variant: "destructive" }),
-      }
-    );
+  async function handleConnect() {
+    if (!demoAccountId.trim() || !demoApiKey.trim() || !demoSecretKey.trim()) {
+      toast({ title: "Credenciais VST obrigatórias", variant: "destructive" });
+      return;
+    }
+    setDemoConnectLoading(true);
+    try {
+      const response = await fetch(apiUrl("/api/demo/connect"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          environment: "demo",
+          accountId: demoAccountId,
+          apiKey: demoApiKey,
+          secretKey: demoSecretKey,
+        }),
+      });
+      const data = await response.json() as { connected?: boolean; balance?: string; currency?: string; error?: string };
+      if (!response.ok || !data.connected) throw new Error(data.error ?? "Credenciais VST inválidas");
+      setDemoApiKey("");
+      setDemoSecretKey("");
+      setAutoFire(true);
+      autoFiredKeysRef.current.clear();
+      toast({ title: "Demo VST ativado", description: `Auto-Fire ligado · Balance: ${data.balance ?? "?"} ${data.currency ?? "VST"}` });
+      refetchStatus();
+    } catch (error) {
+      toast({
+        title: "Falha ao conectar",
+        description: error instanceof Error ? error.message : "Não foi possível ativar o modo demo",
+        variant: "destructive",
+      });
+    } finally {
+      setDemoConnectLoading(false);
+    }
   }
 
   function handleDisconnect() {
@@ -860,8 +881,8 @@ export default function DemoPage() {
                     Ativar Modo Demo VST
                   </CardTitle>
                   <p className="text-[10px] text-muted-foreground mt-1 leading-relaxed">
-                    Usa as mesmas credenciais da conexão principal, mas direciona as ordens para o servidor VST da BingX
-                    (<span className="font-mono">open-api-vst.bingx.com</span>) — sem risco real.
+                    Use credenciais exclusivas da conta Demo Trading. Elas nunca são copiadas da conexão live e
+                    somente podem acessar <span className="font-mono">open-api-vst.bingx.com</span>.
                   </p>
                 </CardHeader>
                 <CardContent className="px-4 pb-4 space-y-3">
@@ -872,13 +893,34 @@ export default function DemoPage() {
                       (Futuros → Demo Trading) antes de conectar.
                     </p>
                   </div>
+                  <Input
+                    value={demoAccountId}
+                    onChange={(event) => setDemoAccountId(event.target.value)}
+                    placeholder="ID da conta demo"
+                    autoComplete="off"
+                  />
+                  <Input
+                    value={demoApiKey}
+                    onChange={(event) => setDemoApiKey(event.target.value)}
+                    placeholder="API Key VST"
+                    autoComplete="off"
+                    className="font-mono"
+                  />
+                  <Input
+                    value={demoSecretKey}
+                    onChange={(event) => setDemoSecretKey(event.target.value)}
+                    placeholder="Secret Key VST"
+                    type="password"
+                    autoComplete="new-password"
+                    className="font-mono"
+                  />
                   <Button
                     className="w-full bg-blue-600 hover:bg-blue-500 text-white"
                     size="sm"
                     onClick={handleConnect}
-                    disabled={connectMutation.isPending}
+                    disabled={demoConnectLoading}
                   >
-                    {connectMutation.isPending
+                    {demoConnectLoading
                       ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-2" />
                       : <Radio className="w-3.5 h-3.5 mr-2" />
                     }
