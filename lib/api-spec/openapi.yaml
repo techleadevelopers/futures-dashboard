@@ -420,7 +420,13 @@ paths:
     post:
       operationId: connectDemo
       tags: [demo]
-      summary: Activate demo VST mode using existing session credentials
+      summary: Activate demo VST mode using separate demo credentials
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DemoCredentials"
       responses:
         "200":
           description: Demo connection result
@@ -689,11 +695,30 @@ components:
     BingXCredentials:
       type: object
       properties:
+        environment:
+          type: string
+          enum: [live]
+        accountId:
+          type: string
         apiKey:
           type: string
         secretKey:
           type: string
-      required: [apiKey, secretKey]
+      required: [environment, accountId, apiKey, secretKey]
+
+    DemoCredentials:
+      type: object
+      properties:
+        environment:
+          type: string
+          enum: [demo]
+        accountId:
+          type: string
+        apiKey:
+          type: string
+        secretKey:
+          type: string
+      required: [environment, accountId, apiKey, secretKey]
 
     ConnectResult:
       type: object
