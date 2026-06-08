@@ -30,6 +30,7 @@ import {
   Zap, Radio, CheckCircle2, XCircle, ArrowRight, Loader2,
   TrendingUp, TrendingDown, DollarSign, LogOut, Play, Square,
   Clock, Target, AlertTriangle, RefreshCw, Shield,
+  BarChart3, Crosshair, ChevronDown, ChevronUp, Award, Layers,
 } from "lucide-react";
 
 interface LogEntry {
@@ -383,6 +384,8 @@ export default function DemoPage() {
   const lastAutoFireAtRef = useRef(0);
   const symbolCooldownRef = useRef<Map<string, number>>(new Map());
   const riskClosingKeysRef = useRef<Set<string>>(new Set());
+  const [sniperLoading, setSniperLoading] = useState(false);
+  const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
 
   const { data: btcTicker } = useGetBingXTicker(
     { symbol: "BTC-USDT" },
@@ -416,6 +419,63 @@ export default function DemoPage() {
     queryFn: runDemoRiskCheck,
     enabled: !!demoStatus?.connected,
     refetchInterval: 2000,
+  });
+
+  const { data: sniperStatus, refetch: refetchSniper } = useQuery({
+    queryKey: ["demo-sniper-status"],
+    queryFn: async () => {
+      const r = await fetch(apiUrl("/api/demo/sniper/status"), { credentials: "include" });
+      if (!r.ok) return null;
+      return r.json() as Promise<{
+        running: boolean;
+        startedAt: number | null;
+        uptimeMs: number | null;
+        cycleCount: number;
+        totalPlaced: number;
+        stopReason: string | null;
+        lastCycleAt: number | null;
+        openTrades: number;
+        lastCycleSummary: {
+          placed: number; skipped: number; scanned: number; btcRegime: string;
+          placements: Array<{ symbol: string; positionSide: string; score: number; tier: number }>;
+        } | null;
+        config: { globalMax: number; perSymbolMax: number; cycleMs: number };
+      }>;
+    },
+    refetchInterval: demoStatus?.connected ? 4000 : false,
+    enabled: !!demoStatus?.connected,
+  });
+
+  const { data: campaignData, refetch: refetchCampaign } = useQuery({
+    queryKey: ["demo-campaign"],
+    queryFn: async () => {
+      const r = await fetch(apiUrl("/api/demo/campaign"), { credentials: "include" });
+      if (!r.ok) return null;
+      return r.json() as Promise<{
+        summary: {
+          totalTrades: number; totalWins: number; totalLosses: number;
+          winRate: number; totalPnl: number; totalFees: number;
+          maxDrawdown: number; symbolCount: number;
+          bestSymbol: string | null; worstSymbol: string | null;
+          sniperRunning: boolean; sniperOpenTrades: number;
+        };
+        symbols: Array<{
+          symbol: string; trades: number; wins: number; losses: number;
+          winRate: number; totalPnl: number; totalFees: number; totalGrossPnl: number;
+          avgHoldMs: number; maxDrawdown: number; lastTradeAt: number;
+          tpCount: number; slCount: number;
+          entries: Array<{
+            id: string; entryTime: number; exitTime: number;
+            positionSide: string; entryPrice: number; exitPrice: number;
+            realizedPnl: number; fee: number; grossPnl: number;
+            exitReason: string; isWin: boolean; holdMs: number;
+            btcRegime: string; estimated: boolean;
+          }>;
+        }>;
+      }>;
+    },
+    refetchInterval: demoStatus?.connected ? 15000 : false,
+    enabled: !!demoStatus?.connected,
   });
 
   const btcChange = btcTicker ? parseFloat(btcTicker.priceChangePercent) : 0;
@@ -491,6 +551,45 @@ export default function DemoPage() {
     disconnectMutation.mutate(undefined, {
       onSuccess: () => { toast({ title: "Demo disconnected" }); refetchStatus(); },
     });
+  }
+
+  async function handleSniperStart() {
+    setSniperLoading(true);
+    try {
+      const r = await fetch(apiUrl("/api/demo/sniper/start"), { method: "POST", credentials: "include" });
+      const data = await r.json() as { started?: boolean; running?: boolean; config?: { globalMax: number; cycleMs: number } };
+      if (data.started || data.running) {
+        toast({
+          title: "Demo Sniper Autopilot iniciado",
+          description: `Escaneando todos os símbolos a cada ${((data.config?.cycleMs ?? 30000) / 1000).toFixed(0)}s · Max ${data.config?.globalMax ?? 50} posições`,
+        });
+      }
+      refetchSniper();
+    } catch {
+      toast({ title: "Erro", description: "Falha ao iniciar o sniper autopilot", variant: "destructive" });
+    } finally {
+      setSniperLoading(false);
+    }
+  }
+
+  async function handleSniperStop() {
+    setSniperLoading(true);
+    try {
+      await fetch(apiUrl("/api/demo/sniper/stop"), { method: "POST", credentials: "include" });
+      toast({ title: "Demo Sniper parado" });
+      refetchSniper();
+    } catch {
+      toast({ title: "Erro", description: "Falha ao parar o sniper", variant: "destructive" });
+    } finally {
+      setSniperLoading(false);
+    }
+  }
+
+  function fmtHold(ms: number): string {
+    if (!ms || ms <= 0) return "-";
+    const m = Math.floor(ms / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+    return m > 0 ? `${m}m${s}s` : `${s}s`;
   }
 
   function fireDemoOrder(
@@ -938,6 +1037,94 @@ export default function DemoPage() {
               </Card>
             )}
 
+            {/* ── Demo Sniper Autopilot ── */}
+            {demoConnected && (
+              <Card className={`border-2 transition-colors ${sniperStatus?.running ? "border-purple-500/50 bg-purple-500/5" : "border-border/40 bg-card/30"}`}>
+                <CardContent className="px-4 py-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Crosshair className={`w-4 h-4 ${sniperStatus?.running ? "text-purple-400" : "text-muted-foreground"}`} />
+                      <span className={`text-sm font-bold ${sniperStatus?.running ? "text-purple-400" : "text-muted-foreground"}`}>
+                        Sniper Autopilot
+                      </span>
+                      {sniperStatus?.running && (
+                        <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-purple-500/20 text-[9px] font-mono font-bold text-purple-400">
+                          <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
+                          LIVE
+                        </span>
+                      )}
+                    </div>
+                    <Button
+                      size="sm"
+                      disabled={sniperLoading}
+                      onClick={sniperStatus?.running ? handleSniperStop : handleSniperStart}
+                      className={`h-7 px-3 text-[11px] font-bold ${sniperStatus?.running
+                        ? "bg-red-600/20 hover:bg-red-600/40 text-red-400 border border-red-500/30"
+                        : "bg-purple-600 hover:bg-purple-500 text-white"}`}
+                      variant="ghost"
+                    >
+                      {sniperLoading ? <Loader2 className="w-3 h-3 animate-spin" />
+                        : sniperStatus?.running ? <><Square className="w-3 h-3 mr-1" />Stop</>
+                        : <><Play className="w-3 h-3 mr-1" />Start</>}
+                    </Button>
+                  </div>
+
+                  {sniperStatus ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        ["Cycles", sniperStatus.cycleCount],
+                        ["Placed", sniperStatus.totalPlaced],
+                        ["Open (sniper)", sniperStatus.openTrades],
+                        ["Uptime", sniperStatus.uptimeMs ? `${Math.floor(sniperStatus.uptimeMs / 60000)}m` : "-"],
+                      ].map(([label, value]) => (
+                        <div key={String(label)} className="flex flex-col items-center py-1.5 px-2 rounded-md bg-muted/10 border border-border/15">
+                          <span className="text-base font-bold font-mono">{value}</span>
+                          <span className="text-[8px] text-muted-foreground uppercase tracking-wider mt-0.5">{label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {sniperStatus?.lastCycleSummary && (
+                    <div className="space-y-1.5">
+                      <div className="text-[9px] text-muted-foreground uppercase tracking-wider font-semibold">Último ciclo</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold ${
+                          sniperStatus.lastCycleSummary.btcRegime === "BULL" ? "bg-green-500/15 text-green-400"
+                          : sniperStatus.lastCycleSummary.btcRegime === "BEAR" ? "bg-red-500/15 text-red-400"
+                          : "bg-muted/20 text-muted-foreground"
+                        }`}>{sniperStatus.lastCycleSummary.btcRegime}</span>
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-muted/15 text-muted-foreground">
+                          {sniperStatus.lastCycleSummary.scanned} scanned
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-green-500/10 text-green-400">
+                          +{sniperStatus.lastCycleSummary.placed} placed
+                        </span>
+                      </div>
+                      {sniperStatus.lastCycleSummary.placements.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {sniperStatus.lastCycleSummary.placements.slice(0, 4).map((p, i) => (
+                            <span key={i} className={`px-1.5 py-0.5 rounded text-[8px] font-mono ${
+                              p.positionSide === "LONG" ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"
+                            }`}>
+                              {p.symbol.replace("-USDT", "")} {p.positionSide === "LONG" ? "▲" : "▼"} ×{p.tier}
+                            </span>
+                          ))}
+                          {sniperStatus.lastCycleSummary.placements.length > 4 && (
+                            <span className="text-[8px] text-muted-foreground">+{sniperStatus.lastCycleSummary.placements.length - 4} more</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="text-[9px] text-muted-foreground leading-relaxed pt-0.5 border-t border-border/15">
+                    Score ≥0.90 → ×10 · ≥0.80 → ×5 · ≥0.70 → ×3 · ≥0.60 → ×1
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
             {!demoConnected && (
               <div className="px-4 py-8 rounded-lg border border-dashed border-border/30 text-center">
                 <FlaskConical className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
@@ -1311,6 +1498,190 @@ export default function DemoPage() {
   )}
 </Card>
         </div>
+
+        {/* ── Campaign Reporting ── */}
+        <Card className="border-border/30 bg-card/20">
+          <CardHeader className="px-5 pt-5 pb-3 border-b border-border/15">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-purple-500/10">
+                  <BarChart3 className="w-3.5 h-3.5 text-purple-400" />
+                </div>
+                <CardTitle className="text-sm font-semibold tracking-tight">Campaign Reporting</CardTitle>
+                {campaignData?.summary && (
+                  <span className="text-[10px] font-mono text-muted-foreground px-2 py-0.5 rounded bg-muted/20">
+                    {campaignData.summary.totalTrades} trades · {campaignData.summary.symbolCount} símbolo{campaignData.summary.symbolCount !== 1 ? "s" : ""}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {campaignData?.summary && (
+                  <div className="flex items-center gap-3">
+                    <div className="text-center">
+                      <div className={`text-sm font-bold font-mono ${campaignData.summary.totalPnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                        {campaignData.summary.totalPnl >= 0 ? "+" : ""}{campaignData.summary.totalPnl.toFixed(4)}
+                      </div>
+                      <div className="text-[8px] text-muted-foreground uppercase">Net PnL</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-sm font-bold font-mono text-amber-400">
+                        {(campaignData.summary.winRate * 100).toFixed(1)}%
+                      </div>
+                      <div className="text-[8px] text-muted-foreground uppercase">Win Rate</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-sm font-bold font-mono text-red-400/80">
+                        -{campaignData.summary.maxDrawdown.toFixed(4)}
+                      </div>
+                      <div className="text-[8px] text-muted-foreground uppercase">Max DD</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-sm font-bold font-mono text-muted-foreground">
+                        {campaignData.summary.totalFees.toFixed(4)}
+                      </div>
+                      <div className="text-[8px] text-muted-foreground uppercase">Fees</div>
+                    </div>
+                  </div>
+                )}
+                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => refetchCampaign()}>
+                  <RefreshCw className="w-3 h-3" />
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+
+          {!demoConnected ? (
+            <div className="px-5 py-8 text-center text-[11px] text-muted-foreground">
+              Conecte a conta demo para ver o relatório de campanha.
+            </div>
+          ) : !campaignData || campaignData.symbols.length === 0 ? (
+            <div className="px-5 py-8 text-center">
+              <Layers className="w-8 h-8 text-muted-foreground/20 mx-auto mb-3" />
+              <p className="text-xs text-muted-foreground">Nenhum trade demo registrado ainda.</p>
+              <p className="text-[10px] text-muted-foreground/60 mt-1">Inicie o Sniper Autopilot para acumular dados.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="border-b border-border/15 bg-muted/5">
+                    {["Símbolo", "Trades", "W%", "Net PnL", "Gross", "Fees", "Drawdown", "TP", "SL", "Avg Hold", ""].map((h) => (
+                      <th key={h} className="px-3 py-2.5 text-left text-[9px] font-semibold text-muted-foreground uppercase tracking-wider whitespace-nowrap">
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/10">
+                  {campaignData.symbols.map((sym) => {
+                    const isExpanded = expandedSymbol === sym.symbol;
+                    const shortSym = sym.symbol.replace("-USDT", "").replace("-USD", "");
+                    return (
+                      <>
+                        <tr
+                          key={sym.symbol}
+                          className="hover:bg-muted/8 transition-colors cursor-pointer"
+                          onClick={() => setExpandedSymbol(isExpanded ? null : sym.symbol)}
+                        >
+                          <td className="px-3 py-2.5">
+                            <div className="flex items-center gap-2">
+                              {sym.symbol === campaignData.summary.bestSymbol && (
+                                <Award className="w-3 h-3 text-yellow-400 shrink-0" />
+                              )}
+                              <span className="font-bold">{shortSym}</span>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2.5 font-mono">
+                            <span className="text-green-400">{sym.wins}W</span>
+                            <span className="text-muted-foreground mx-1">/</span>
+                            <span className="text-red-400">{sym.losses}L</span>
+                          </td>
+                          <td className="px-3 py-2.5 font-mono font-bold">
+                            <span className={sym.winRate >= 0.5 ? "text-green-400" : sym.winRate >= 0.4 ? "text-amber-400" : "text-red-400"}>
+                              {(sym.winRate * 100).toFixed(1)}%
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5 font-mono font-bold">
+                            <span className={sym.totalPnl >= 0 ? "text-green-400" : "text-red-400"}>
+                              {sym.totalPnl >= 0 ? "+" : ""}{sym.totalPnl.toFixed(4)}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5 font-mono text-muted-foreground">
+                            {sym.totalGrossPnl >= 0 ? "+" : ""}{sym.totalGrossPnl.toFixed(4)}
+                          </td>
+                          <td className="px-3 py-2.5 font-mono text-red-400/70">{sym.totalFees.toFixed(4)}</td>
+                          <td className="px-3 py-2.5 font-mono text-red-400/80">-{sym.maxDrawdown.toFixed(4)}</td>
+                          <td className="px-3 py-2.5 font-mono text-green-400/80">{sym.tpCount}</td>
+                          <td className="px-3 py-2.5 font-mono text-red-400/80">{sym.slCount}</td>
+                          <td className="px-3 py-2.5 font-mono text-muted-foreground">{fmtHold(sym.avgHoldMs)}</td>
+                          <td className="px-3 py-2.5">
+                            {isExpanded
+                              ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" />
+                              : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />}
+                          </td>
+                        </tr>
+
+                        {isExpanded && sym.entries.length > 0 && (
+                          <tr key={`${sym.symbol}-entries`}>
+                            <td colSpan={11} className="p-0">
+                              <div className="bg-muted/5 border-l-2 border-purple-500/30">
+                                <div className="px-4 py-2 text-[9px] font-semibold text-muted-foreground uppercase tracking-wider border-b border-border/10">
+                                  Entradas individuais — {sym.entries.length} registros (últimos 100)
+                                </div>
+                                <div className="max-h-[260px] overflow-y-auto">
+                                  <table className="w-full text-[10px]">
+                                    <thead className="sticky top-0 bg-muted/10">
+                                      <tr className="border-b border-border/10">
+                                        {["Lado", "Entry", "Exit", "PnL", "Fee", "Motivo", "Regime", "Hold", "Est."].map((h) => (
+                                          <th key={h} className="px-3 py-1.5 text-left text-[8px] font-semibold text-muted-foreground uppercase">{h}</th>
+                                        ))}
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-border/5">
+                                      {sym.entries.slice().reverse().map((e) => (
+                                        <tr key={e.id} className={`hover:bg-muted/10 transition-colors ${e.isWin ? "" : "opacity-80"}`}>
+                                          <td className="px-3 py-1.5">
+                                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                                              e.positionSide === "LONG" ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"
+                                            }`}>{e.positionSide === "LONG" ? "▲L" : "▼S"}</span>
+                                          </td>
+                                          <td className="px-3 py-1.5 font-mono text-muted-foreground">{e.entryPrice.toFixed(2)}</td>
+                                          <td className="px-3 py-1.5 font-mono text-muted-foreground">{e.exitPrice.toFixed(2)}</td>
+                                          <td className="px-3 py-1.5 font-mono font-bold">
+                                            <span className={e.realizedPnl >= 0 ? "text-green-400" : "text-red-400"}>
+                                              {e.realizedPnl >= 0 ? "+" : ""}{e.realizedPnl.toFixed(4)}
+                                            </span>
+                                          </td>
+                                          <td className="px-3 py-1.5 font-mono text-muted-foreground/70">{e.fee.toFixed(4)}</td>
+                                          <td className="px-3 py-1.5">
+                                            <span className={`text-[8px] px-1 py-0.5 rounded font-mono ${
+                                              e.exitReason === "TAKE_PROFIT" ? "bg-green-500/15 text-green-400"
+                                              : e.exitReason === "STOP_LOSS" ? "bg-red-500/15 text-red-400"
+                                              : "bg-muted/20 text-muted-foreground"
+                                            }`}>{e.exitReason.replace("_", " ")}</span>
+                                          </td>
+                                          <td className="px-3 py-1.5 font-mono text-muted-foreground/70">{e.btcRegime}</td>
+                                          <td className="px-3 py-1.5 font-mono text-muted-foreground">{fmtHold(e.holdMs)}</td>
+                                          <td className="px-3 py-1.5">
+                                            {e.estimated && <span className="text-[8px] text-amber-400/70 font-mono">est</span>}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
 
         {/* How it works */}
         <Card className="border-border/20 bg-card/10">
