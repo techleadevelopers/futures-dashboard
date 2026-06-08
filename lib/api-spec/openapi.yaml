@@ -416,17 +416,24 @@ paths:
               schema:
                 $ref: "#/components/schemas/ScanResult"
 
+  /aggression/status:
+    get:
+      operationId: getAggressionStatus
+      tags: [bot]
+      summary: Adaptive Aggression Controller status and recent impact
+      responses:
+        "200":
+          description: Current aggression state, applied parameters, state history, and recent trade impact
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AggressionStatus"
+
   /demo/connect:
     post:
       operationId: connectDemo
       tags: [demo]
-      summary: Activate demo VST mode using separate demo credentials
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/DemoCredentials"
+      summary: Activate demo VST mode using credentials from the login session
       responses:
         "200":
           description: Demo connection result
@@ -698,20 +705,6 @@ components:
         environment:
           type: string
           enum: [live]
-        accountId:
-          type: string
-        apiKey:
-          type: string
-        secretKey:
-          type: string
-      required: [environment, accountId, apiKey, secretKey]
-
-    DemoCredentials:
-      type: object
-      properties:
-        environment:
-          type: string
-          enum: [demo]
         accountId:
           type: string
         apiKey:
@@ -1698,6 +1691,104 @@ components:
           type: integer
         maxOrdersPerSecond:
           type: integer
+
+    AggressionMetrics:
+      type: object
+      properties:
+        recentTrades: { type: integer }
+        recentWinRate: { type: number }
+        recentProfitFactor: { type: number }
+        recentPnlUsdt: { type: number }
+        recentDrawdownUsdt: { type: number }
+        consecutiveLosses: { type: integer }
+        avgSlippageBps: { type: number }
+        scoreSeparation: { type: number }
+        hotSymbols: { type: integer }
+        marketMomentum: { type: number }
+        openPositionPressure: { type: number }
+      required:
+        - recentTrades
+        - recentWinRate
+        - recentProfitFactor
+        - recentPnlUsdt
+        - recentDrawdownUsdt
+        - consecutiveLosses
+        - avgSlippageBps
+        - scoreSeparation
+        - hotSymbols
+        - marketMomentum
+        - openPositionPressure
+
+    AggressionStatus:
+      type: object
+      properties:
+        aggressionState:
+          type: string
+          enum: [PAUSED, DEFENSIVE, NORMAL, BOOST, MAX_SNIPER]
+        maxCandidatesThisCycle: { type: integer }
+        maxPositionsThisCycle: { type: integer }
+        marginMultiplier: { type: number }
+        stackingAllowed: { type: boolean }
+        minAggressiveScore: { type: number }
+        cooldownMultiplier: { type: number }
+        symbolConcentrationLimit: { type: integer }
+        allowBurstMode: { type: boolean }
+        reason: { type: string }
+        metrics:
+          $ref: "#/components/schemas/AggressionMetrics"
+        appliedAt: { type: integer }
+        source:
+          type: string
+          enum: [live, demo, all]
+        stateHistory:
+          type: array
+          items:
+            type: object
+            properties:
+              from:
+                type: string
+                nullable: true
+                enum: [PAUSED, DEFENSIVE, NORMAL, BOOST, MAX_SNIPER]
+              to:
+                type: string
+                enum: [PAUSED, DEFENSIVE, NORMAL, BOOST, MAX_SNIPER]
+              reason: { type: string }
+              at: { type: integer }
+            required: [from, to, reason, at]
+        recentImpact:
+          type: object
+          properties:
+            tradesAttempted: { type: integer }
+            tradesPlaced: { type: integer }
+            pnlUsdt: { type: number }
+            enteredBoostAt: { type: integer, nullable: true }
+            exitedBoostAt: { type: integer, nullable: true }
+            enteredMaxSniperAt: { type: integer, nullable: true }
+            exitedMaxSniperAt: { type: integer, nullable: true }
+          required:
+            - tradesAttempted
+            - tradesPlaced
+            - pnlUsdt
+            - enteredBoostAt
+            - exitedBoostAt
+            - enteredMaxSniperAt
+            - exitedMaxSniperAt
+      required:
+        - aggressionState
+        - maxCandidatesThisCycle
+        - maxPositionsThisCycle
+        - marginMultiplier
+        - stackingAllowed
+        - minAggressiveScore
+        - cooldownMultiplier
+        - symbolConcentrationLimit
+        - allowBurstMode
+        - reason
+        - metrics
+        - appliedAt
+        - source
+        - stateHistory
+        - recentImpact
 
     EdgeSymbol:
       type: object
