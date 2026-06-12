@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery } from "@tanstack/react-query";
+import { apiUrl } from "@/lib/api-url";
 import {
   getTriggerStatus,
   getTriggerStatusQueryKey,
@@ -40,7 +41,40 @@ import {
   Grid3X3,
   Lock,
   Layers,
+  DollarSign,
 } from "lucide-react";
+
+
+  // Mapeamento de ícones oficiais por símbolo (removendo -USDT)
+const CRYPTO_ICONS: Record<string, string> = {
+  BTC: "https://cryptologos.cc/logos/bitcoin-btc-logo.png",
+  ETH: "https://cryptologos.cc/logos/ethereum-eth-logo.png",
+  SOL: "https://cryptologos.cc/logos/solana-sol-logo.png",
+  BNB: "https://cryptologos.cc/logos/bnb-bnb-logo.png",
+  XRP: "https://cryptologos.cc/logos/xrp-xrp-logo.png",
+  ADA: "https://cryptologos.cc/logos/cardano-ada-logo.png",
+  AVAX: "https://cryptologos.cc/logos/avalanche-avax-logo.png",
+  DOT: "https://cryptologos.cc/logos/polkadot-dot-logo.png",
+  POL: "https://cryptologos.cc/logos/polygon-matic-logo.png",
+  NEAR: "https://cryptologos.cc/logos/near-protocol-near-logo.png",
+  ATOM: "https://cryptologos.cc/logos/cosmos-atom-logo.png",
+  LINK: "https://cryptologos.cc/logos/chainlink-link-logo.png",
+  UNI: "https://cryptologos.cc/logos/uniswap-uni-logo.png",
+  ARB: "https://cryptologos.cc/logos/arbitrum-arb-logo.png",
+  OP: "https://cryptologos.cc/logos/optimism-op-logo.png",
+  DOGE: "https://cryptologos.cc/logos/dogecoin-doge-logo.png",
+  VVV: "https://cryptologos.cc/logos/venus-xvs-logo.png",
+  WIF: "https://cryptologos.cc/logos/wif-wif-logo.png",
+  APT: "https://cryptologos.cc/logos/aptos-apt-logo.png",
+  BEAT: "https://cryptologos.cc/logos/beat-beat-logo.png",
+  SUI: "https://cryptologos.cc/logos/sui-sui-logo.png",
+  WLD: "https://cryptologos.cc/logos/worldcoin-org-wld-logo.png",
+  RENDER: "https://cryptologos.cc/logos/render-token-rndr-logo.png",
+  FET: "https://cryptologos.cc/logos/fetch-ai-fet-logo.png",
+  INJ: "https://cryptologos.cc/logos/injective-protocol-inj-logo.png",
+  TAO: "https://cryptologos.cc/logos/bittensor-tao-logo.png",
+  PEPE: "https://cryptologos.cc/logos/pepe-pepe-logo.png",
+};
 
 function fmt(n: number | null | undefined, decimals = 2): string {
   if (n == null) return "—";
@@ -52,6 +86,11 @@ function fmtPrice(n: number | null | undefined): string {
   if (n >= 10000) return n.toLocaleString("en-US", { maximumFractionDigits: 1 });
   if (n >= 1) return n.toFixed(4);
   return n.toFixed(6);
+}
+
+function fmtUsd(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "$0.00";
+  return `${n >= 0 ? "+" : "-"}$${Math.abs(n).toFixed(2)}`;
 }
 
 function fmtAgo(ms: number | null): string {
@@ -72,22 +111,204 @@ function fmtTtl(ms: number): string {
 
 // ── Old trigger strategy components ──────────────────────────────────────────
 
-function ArmedCard({ s, side, onReset }: {
+type TriggerPnlReport = {
+  live?: {
+    totalTrades?: number;
+    wins?: number;
+    losses?: number;
+    profitFactor?: number;
+    netPnlUsdt?: number;
+    grossWinUsdt?: number;
+    grossLossUsdt?: number;
+  };
+};
+
+function useTriggerPnlReport() {
+  return useQuery<TriggerPnlReport>({
+    queryKey: ["trigger-pnl-report"],
+    queryFn: async () => {
+      const r = await fetch(apiUrl("/api/sniper/pnl/report"), { credentials: "include" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json() as Promise<TriggerPnlReport>;
+    },
+    refetchInterval: 15_000,
+  });
+}
+
+function TriggerPnlMicroCard({
+  report,
+  pendingTotal = 0,
+  pendingLong = 0,
+  pendingShort = 0,
+}: {
+  report?: TriggerPnlReport;
+  pendingTotal?: number;
+  pendingLong?: number;
+  pendingShort?: number;
+}) {
+  const live = report?.live;
+  const wins = live?.wins ?? 0;
+  const losses = live?.losses ?? 0;
+  const totalTrades = live?.totalTrades ?? 0;
+  const grossWin = live?.grossWinUsdt ?? 0;
+  const grossLoss = live?.grossLossUsdt ?? 0;
+  const net = live?.netPnlUsdt ?? 0;
+  const pf = live?.profitFactor ?? 0;
+  const netGood = net >= 0;
+
+  return (
+    <Card className="border-border/15 bg-card/8">
+      <CardContent className="px-3 py-2">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2 min-w-[150px]">
+            <div className={`w-7 h-7 rounded-md flex items-center justify-center ${netGood ? "bg-emerald-500/15" : "bg-rose-500/15"}`}>
+              <DollarSign className={`w-3.5 h-3.5 ${netGood ? "text-emerald-400" : "text-rose-400"}`} />
+            </div>
+            <div>
+              <div className="text-[9px] text-muted-foreground/50 uppercase tracking-wider">Resultado Trigger</div>
+              <div className={`text-sm font-bold font-mono ${netGood ? "text-emerald-400" : "text-rose-400"}`}>
+                {fmtUsd(net)}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
+            <div>
+              <span className="text-muted-foreground/45">PnL + </span>
+              <span className="font-mono font-semibold text-emerald-400">{fmtUsd(grossWin)}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground/45">PnL - </span>
+              <span className="font-mono font-semibold text-rose-400">-${grossLoss.toFixed(2)}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground/45">W/L </span>
+              <span className="font-mono text-foreground/80">{wins}/{losses}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground/45">PF </span>
+              <span className={`font-mono font-semibold ${pf >= 1.2 ? "text-emerald-400" : pf >= 1 ? "text-amber-400" : "text-rose-400"}`}>
+                {Number.isFinite(pf) ? fmt(pf, 2) : "∞"}
+              </span>
+            </div>
+            <div className="h-3 w-px bg-border/25" />
+            <div>
+              <span className="text-muted-foreground/45">Pending </span>
+              <span className="font-mono font-semibold text-foreground/80">{pendingTotal}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground/45">LONG </span>
+              <span className="font-mono font-semibold text-emerald-400">{pendingLong}</span>
+            </div>
+            <div>
+              <span className="text-muted-foreground/45">SHORT </span>
+              <span className="font-mono font-semibold text-rose-400">{pendingShort}</span>
+            </div>
+          </div>
+
+          <Badge variant="outline" className="ml-auto text-[9px] border-border/30 text-muted-foreground/60">
+            {totalTrades} trades
+          </Badge>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function CompactTriggerCard({
+  token,
+  side,
+  entryPrice,
+  currentPrice,
+  changePct,
+  targetPrice,
+}: {
+  token: string;
+  side: "LONG" | "SHORT";
+  entryPrice: number | null | undefined;
+  currentPrice: number | null | undefined;
+  changePct: number;
+  targetPrice: number | null | undefined;
+}) {
+  const isLong = side === "LONG";
+
+  return (
+    <div className={`relative h-20 w-full max-w-[300px] overflow-hidden rounded-[7px] border ${
+      isLong
+        ? "border-emerald-400/80 bg-emerald-950/25"
+        : "border-rose-400/80 bg-rose-950/25"
+    }`}>
+      <div className={`absolute inset-x-0 top-0 h-px ${isLong ? "bg-emerald-300" : "bg-rose-300"}`} />
+      <div className="grid h-full grid-cols-[68px_1fr_1fr_42px] grid-rows-[48px_20px] gap-x-1.5 px-2.5 pt-2">
+        <div className="flex min-w-0 items-start gap-1.5">
+          <img
+            src={CRYPTO_ICONS[token] || CRYPTO_ICONS.BTC}
+            alt={token}
+            className="h-7 w-7 shrink-0 rounded-full object-contain"
+            onError={(e) => (e.target as HTMLImageElement).src = CRYPTO_ICONS.BTC}
+          />
+          <span className="truncate pt-1 font-mono text-[11px] font-bold text-foreground">{token}</span>
+        </div>
+
+        <div className="min-w-0">
+          <div className="truncate text-[6px] uppercase tracking-[0.12em] text-muted-foreground/60">
+            Preço de entrada
+          </div>
+          <div className="mt-1 truncate font-mono text-[11px] font-bold leading-none text-foreground">
+            {fmtPrice(entryPrice)}
+          </div>
+        </div>
+
+        <div className="min-w-0">
+          <div className="truncate text-[6px] uppercase tracking-[0.12em] text-muted-foreground/60">
+            Preço atual
+          </div>
+          <div className="mt-1 truncate font-mono text-[11px] font-bold leading-none text-foreground">
+            {fmtPrice(currentPrice)}
+          </div>
+          <div className={`mt-1 truncate font-mono text-[7px] font-semibold leading-none ${
+            changePct >= 0 ? "text-emerald-400" : "text-rose-400"
+          }`}>
+            {changePct >= 0 ? "↘ " : "↗ "}{changePct >= 0 ? "+" : ""}{fmt(changePct)}% do ref
+          </div>
+        </div>
+
+        <div className={`pt-1 text-right font-mono text-[9px] font-bold ${
+          isLong ? "text-emerald-400" : "text-rose-400"
+        }`}>
+          {side}
+        </div>
+
+        <div className="col-span-4 flex min-w-0 items-center gap-1.5 border-t border-white/[0.03] text-[8px]">
+          <span className="shrink-0 text-muted-foreground/60">TP alvo</span>
+          <span className={`truncate font-mono font-semibold ${
+            isLong ? "text-emerald-400" : "text-rose-400"
+          }`}>
+            {fmtPrice(targetPrice)}
+          </span>
+          <span className="truncate font-mono text-[7px] text-muted-foreground/50">
+            ({changePct >= 0 ? "+" : ""}{fmt(changePct)}%)
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LegacyArmedCard({ s, side }: {
   s: TriggerSymbolState;
   side: "LONG" | "SHORT";
-  onReset: (sym: string) => void;
 }) {
   const isLong = side === "LONG";
   const triggerPrice = isLong ? s.longTriggerPrice : s.shortTriggerPrice;
   const tpPct = isLong ? s.longTpPct : s.shortTpPct;
   const deviationPct = isLong ? s.dropPct : s.risePct;
   const firedAt = isLong ? s.longFiredAt : s.shortFiredAt;
-  const progress = Math.min(100, (deviationPct / (tpPct || 1)) * 100);
   const token = s.symbol.replace("-USDT", "");
   const isFired = !!firedAt;
 
   return (
-    <div className={`relative rounded-xl border overflow-hidden ${
+    <div className={`relative w-full max-w-[300px] rounded-lg border overflow-hidden ${
       isFired
         ? isLong
           ? "border-emerald-400/40 bg-emerald-950/30"
@@ -100,60 +321,47 @@ function ArmedCard({ s, side, onReset }: {
         <div className={`absolute top-0 left-0 right-0 h-0.5 ${isLong ? "bg-emerald-400" : "bg-rose-400"}`} />
       )}
 
-      <div className="p-4">
-        <div className="flex items-start justify-between mb-3">
+      <div className="p-3">
+        <div className="flex items-start justify-between mb-2">
           <div className="flex items-center gap-2">
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-              isLong ? "bg-emerald-500/20" : "bg-rose-500/20"
-            }`}>
-              {isLong
-                ? <TrendingUp className="w-4 h-4 text-emerald-400" />
-                : <TrendingDown className="w-4 h-4 text-rose-400" />
-              }
-            </div>
+            <img
+              src={CRYPTO_ICONS[token] || CRYPTO_ICONS.BTC}
+              alt={token}
+              className="w-7 h-7 rounded-full object-contain shrink-0"
+              onError={(e) => (e.target as HTMLImageElement).src = CRYPTO_ICONS.BTC}
+            />
             <div>
-              <div className="text-base font-bold text-foreground font-mono">{token}</div>
-              <div className={`text-[10px] font-semibold tracking-wider ${isLong ? "text-emerald-400" : "text-rose-400"}`}>
+              <div className="text-sm font-bold text-foreground font-mono">{token}</div>
+              <div className={`text-[9px] font-semibold tracking-wider ${isLong ? "text-emerald-400" : "text-rose-400"}`}>
                 {side} {isFired ? "· DISPARADO" : "· ARMADO"}
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-1">
-            {isFired ? (
-              <Badge className={`text-[9px] px-1.5 py-0 ${
-                isLong
-                  ? "bg-emerald-400/20 text-emerald-300 border-emerald-400/30"
-                  : "bg-rose-400/20 text-rose-300 border-rose-400/30"
-              }`}>
-                <Zap className="w-2.5 h-2.5 mr-0.5" />DISPARADO
-              </Badge>
-            ) : (
-              <Badge className={`text-[9px] px-1.5 py-0 ${
-                isLong
-                  ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/25"
-                  : "bg-rose-500/15 text-rose-400 border-rose-500/25"
-              }`}>
-                <Activity className="w-2.5 h-2.5 mr-0.5" />ARMADO
-              </Badge>
-            )}
+          <div className={`w-7 h-7 rounded-md flex items-center justify-center shrink-0 ${
+            isLong ? "bg-emerald-500/20" : "bg-rose-500/20"
+          }`}>
+            {isLong
+              ? <TrendingUp className="w-3.5 h-3.5 text-emerald-400" />
+              : <TrendingDown className="w-3.5 h-3.5 text-rose-400" />
+            }
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3 mb-3">
-          <div className="bg-black/20 rounded-lg p-2.5">
-            <div className="text-[9px] text-muted-foreground/60 uppercase tracking-wider mb-1">
+        <div className="grid grid-cols-2 gap-2 mb-2">
+          <div className="bg-black/20 rounded-md p-2">
+            <div className="text-[8px] text-muted-foreground/60 uppercase tracking-wider mb-0.5">
               Preço de Entrada
             </div>
-            <div className="text-lg font-bold font-mono text-foreground">
+            <div className="text-sm font-bold font-mono text-foreground">
               {fmtPrice(triggerPrice)}
             </div>
             <div className="text-[9px] text-muted-foreground/50">USDT</div>
           </div>
-          <div className="bg-black/20 rounded-lg p-2.5">
-            <div className="text-[9px] text-muted-foreground/60 uppercase tracking-wider mb-1">
+          <div className="bg-black/20 rounded-md p-2">
+            <div className="text-[8px] text-muted-foreground/60 uppercase tracking-wider mb-0.5">
               Preço Atual
             </div>
-            <div className="text-lg font-bold font-mono text-foreground">
+            <div className="text-sm font-bold font-mono text-foreground">
               {fmtPrice(s.currentPrice)}
             </div>
             <div className={`text-[9px] flex items-center gap-0.5 ${isLong ? "text-emerald-400" : "text-rose-400"}`}>
@@ -163,61 +371,63 @@ function ArmedCard({ s, side, onReset }: {
           </div>
         </div>
 
-        <div className="space-y-2">
-          <div className="flex justify-between text-[10px]">
+        <div className="space-y-1">
+          <div className="flex justify-between text-[9px]">
             <span className="text-muted-foreground/60">Referência</span>
             <span className="font-mono text-foreground/80">{fmtPrice(s.referencePrice)}</span>
           </div>
-          <div className="flex justify-between text-[10px]">
+          <div className="flex justify-between text-[9px]">
             <span className="text-muted-foreground/60">TP alvo</span>
             <span className={`font-mono font-semibold ${isLong ? "text-emerald-400" : "text-rose-400"}`}>
               {fmtPrice(s.referencePrice)} (+{fmt(tpPct)}%)
             </span>
           </div>
 
-          <div className="space-y-1">
-            <div className="flex justify-between text-[9px] text-muted-foreground/50">
-              <span>Progresso ao gatilho</span>
-              <span>{fmt(progress, 0)}%</span>
-            </div>
-            <div className="h-1.5 bg-black/30 rounded-full overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all duration-500 ${
-                  isFired
-                    ? isLong ? "bg-emerald-400" : "bg-rose-400"
-                    : isLong ? "bg-emerald-500/70" : "bg-rose-500/70"
-                }`}
-                style={{ width: `${Math.max(2, progress)}%` }}
-              />
-            </div>
-          </div>
         </div>
 
-        {firedAt && (
-          <div className="mt-3 pt-2.5 border-t border-white/5 flex items-center justify-between">
-            <div className={`text-[10px] flex items-center gap-1 ${isLong ? "text-emerald-400/70" : "text-rose-400/70"}`}>
-              <Clock className="w-3 h-3" />Disparado {fmtAgo(firedAt)}
-            </div>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-5 px-2 text-[9px] text-muted-foreground/50 hover:text-foreground/70"
-              onClick={() => onReset(s.symbol)}
-            >
-              <RotateCcw className="w-2.5 h-2.5 mr-1" />Reset
-            </Button>
-          </div>
-        )}
       </div>
     </div>
   );
 }
 
-function SymbolRow({ s, onReset }: { s: TriggerSymbolState; onReset: (sym: string) => void }) {
+function ArmedCard({ s, side }: {
+  s: TriggerSymbolState;
+  side: "LONG" | "SHORT";
+}) {
+  const isLong = side === "LONG";
+  const triggerPrice = isLong ? s.longTriggerPrice : s.shortTriggerPrice;
+  const tpPct = isLong ? s.longTpPct : s.shortTpPct;
+  const deviationPct = isLong ? Math.abs(s.dropPct) : -Math.abs(s.risePct);
+
+  return (
+    <CompactTriggerCard
+      token={s.symbol.replace("-USDT", "")}
+      side={side}
+      entryPrice={triggerPrice}
+      currentPrice={s.currentPrice}
+      changePct={deviationPct}
+      targetPrice={s.referencePrice * (1 + (isLong ? tpPct : -tpPct) / 100)}
+    />
+  );
+}
+
+function SymbolRow({
+  s,
+  onReset,
+  nativeLongPending = 0,
+  nativeShortPending = 0,
+}: {
+  s: TriggerSymbolState;
+  onReset: (sym: string) => void;
+  nativeLongPending?: number;
+  nativeShortPending?: number;
+}) {
   const [expanded, setExpanded] = useState(false);
   const longPct = Math.min(100, (s.dropPct / (s.longTpPct || 1)) * 100);
   const shortPct = Math.min(100, (s.risePct / (s.shortTpPct || 1)) * 100);
   const token = s.symbol.replace("-USDT", "");
+  const hasNativePending = nativeLongPending > 0 || nativeShortPending > 0;
+
 
   return (
     <div className="border border-border/15 rounded-lg bg-card/5 overflow-hidden">
@@ -225,7 +435,15 @@ function SymbolRow({ s, onReset }: { s: TriggerSymbolState; onReset: (sym: strin
         className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-muted/8 transition-colors"
         onClick={() => setExpanded((v) => !v)}
       >
-        <span className="font-mono text-xs font-semibold text-foreground/85 w-20 shrink-0">{token}</span>
+        <div className="flex items-center gap-1.5 w-20 shrink-0">
+  <img
+    src={CRYPTO_ICONS[token] || CRYPTO_ICONS.BTC}
+    alt={token}
+    className="w-4 h-4 rounded-full"
+    onError={(e) => (e.target as HTMLImageElement).src = CRYPTO_ICONS.BTC}
+  />
+  <span className="font-mono text-xs font-semibold text-foreground/85">{token}</span>
+</div>
 
         <div className="flex items-center gap-1.5 shrink-0 w-32">
           <span className={`text-[10px] font-mono tabular-nums ${s.dropPct >= 0.1 ? "text-emerald-400" : "text-muted-foreground/35"}`}>
@@ -248,7 +466,17 @@ function SymbolRow({ s, onReset }: { s: TriggerSymbolState; onReset: (sym: strin
               <Zap className="w-2 h-2 mr-0.5" />SHORT
             </Badge>
           )}
-          {!s.longArmed && !s.shortArmed && (
+          {nativeLongPending > 0 && (
+            <Badge className="bg-emerald-500/15 text-emerald-400 border-emerald-500/25 text-[9px] px-1.5 py-0 h-4">
+              <Zap className="w-2 h-2 mr-0.5" />{nativeLongPending} LONG
+            </Badge>
+          )}
+          {nativeShortPending > 0 && (
+            <Badge className="bg-rose-500/15 text-rose-400 border-rose-500/25 text-[9px] px-1.5 py-0 h-4">
+              <Zap className="w-2 h-2 mr-0.5" />{nativeShortPending} SHORT
+            </Badge>
+          )}
+          {!s.longArmed && !s.shortArmed && !hasNativePending && (
             <span className="text-[9px] text-muted-foreground/35">monitorando</span>
           )}
         </div>
@@ -267,6 +495,7 @@ function SymbolRow({ s, onReset }: { s: TriggerSymbolState; onReset: (sym: strin
             <div className="space-y-1.5">
               <div className="text-[9px] font-semibold text-emerald-400/70 uppercase tracking-wider flex items-center gap-1">
                 <TrendingUp className="w-3 h-3" />LONG Gate
+                {nativeLongPending > 0 && <span className="ml-1 text-[8px] text-emerald-300">ARMADO x{nativeLongPending}</span>}
               </div>
               <div className="space-y-0.5 text-[10px]">
                 <div className="flex justify-between">
@@ -291,6 +520,7 @@ function SymbolRow({ s, onReset }: { s: TriggerSymbolState; onReset: (sym: strin
             <div className="space-y-1.5">
               <div className="text-[9px] font-semibold text-rose-400/70 uppercase tracking-wider flex items-center gap-1">
                 <TrendingDown className="w-3 h-3" />SHORT Gate
+                {nativeShortPending > 0 && <span className="ml-1 text-[8px] text-rose-300">ARMADO x{nativeShortPending}</span>}
               </div>
               <div className="space-y-0.5 text-[10px]">
                 <div className="flex justify-between">
@@ -354,7 +584,15 @@ function PendingOrderRow({ o }: { o: NativePendingOrder }) {
           : <TrendingDown className="w-3.5 h-3.5 text-rose-400" />
         }
       </div>
-      <div className="font-mono text-xs font-bold text-foreground/85 w-16 shrink-0">{token}</div>
+      <div className="flex items-center gap-1.5 w-20 shrink-0">
+  <img
+    src={CRYPTO_ICONS[token] || CRYPTO_ICONS.BTC}
+    alt={token}
+    className="w-4 h-4 rounded-full"
+    onError={(e) => (e.target as HTMLImageElement).src = CRYPTO_ICONS.BTC}
+  />
+  <span className="font-mono text-xs font-bold text-foreground/85">{token}</span>
+</div>
       <div className={`text-[10px] font-semibold shrink-0 ${isLong ? "text-emerald-400" : "text-rose-400"}`}>
         {o.direction}
       </div>
@@ -386,8 +624,9 @@ function NativeSymbolCard({ sym }: { sym: NativeTriggerSymbol }) {
   const [expanded, setExpanded] = useState(false);
   const token = sym.symbol.replace("-USDT", "");
   const movePct = sym.recentMovePct;
-  const isDropping = movePct < 0;
-  const isPumping = movePct > 0;
+  const displayPct = sym.priceChangePct ?? movePct;
+  const isDropping = displayPct < 0;
+  const isPumping = displayPct > 0;
   const inCooldownLong = sym.longCooldownMs > 0;
   const inCooldownShort = sym.shortCooldownMs > 0;
 
@@ -399,24 +638,32 @@ function NativeSymbolCard({ sym }: { sym: NativeTriggerSymbol }) {
         className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-muted/8 transition-colors"
         onClick={() => setExpanded((v) => !v)}
       >
-        <span className="font-mono text-xs font-semibold text-foreground/85 w-16 shrink-0">{token}</span>
+        <div className="flex items-center gap-1.5 w-24 shrink-0">
+          <img
+            src={CRYPTO_ICONS[token] || CRYPTO_ICONS.BTC}
+            alt={token}
+            className="w-4 h-4 rounded-full"
+            onError={(e) => (e.target as HTMLImageElement).src = CRYPTO_ICONS.BTC}
+          />
+          <span className="font-mono text-xs font-semibold text-foreground/85">{sym.symbol}</span>
+        </div>
 
         <div className={`flex items-center gap-0.5 shrink-0 w-20 text-[10px] font-mono tabular-nums ${
-          isDropping ? "text-emerald-400" : isPumping ? "text-rose-400" : "text-muted-foreground/40"
+          isPumping ? "text-emerald-400" : isDropping ? "text-rose-400" : "text-muted-foreground/40"
         }`}>
           {isDropping ? <ArrowDown className="w-2.5 h-2.5" /> : isPumping ? <ArrowUp className="w-2.5 h-2.5" /> : null}
-          {movePct >= 0 ? "+" : ""}{fmt(movePct)}%
+          {displayPct >= 0 ? "+" : ""}{fmt(displayPct)}%
         </div>
 
         <div className="flex-1 flex items-center gap-1.5">
           {sym.wouldFireLong && (
             <Badge className="bg-emerald-400/20 text-emerald-300 border-emerald-400/30 text-[9px] px-1.5 py-0 h-4">
-              <Zap className="w-2 h-2 mr-0.5" />LONG FIRE
+              <Zap className="w-2 h-2 mr-0.5" />LONG
             </Badge>
           )}
           {sym.wouldFireShort && (
             <Badge className="bg-rose-400/20 text-rose-300 border-rose-400/30 text-[9px] px-1.5 py-0 h-4">
-              <Zap className="w-2 h-2 mr-0.5" />SHORT FIRE
+              <Zap className="w-2 h-2 mr-0.5" />SHORT
             </Badge>
           )}
           {inCooldownLong && (
@@ -509,8 +756,9 @@ function NativeSymbolCard({ sym }: { sym: NativeTriggerSymbol }) {
 
           <div className="pt-1.5 border-t border-border/10 flex items-center gap-4 text-[9px] text-muted-foreground/40">
             <span>Atual <span className="font-mono text-foreground/60">{fmtPrice(sym.currentPrice)}</span></span>
+            <span>24h <span className={`font-mono ${displayPct > 0 ? "text-emerald-400/60" : displayPct < 0 ? "text-rose-400/60" : ""}`}>{displayPct >= 0 ? "+" : ""}{fmt(displayPct)}%</span></span>
             <span>ATR <span className="font-mono">{fmt(sym.atrPct)}%</span></span>
-            <span>Mov 5m <span className={`font-mono ${isDropping ? "text-emerald-400/60" : isPumping ? "text-rose-400/60" : ""}`}>{movePct >= 0 ? "+" : ""}{fmt(movePct)}%</span></span>
+            <span>Mov 5m <span className={`font-mono ${movePct < 0 ? "text-emerald-400/60" : movePct > 0 ? "text-rose-400/60" : ""}`}>{movePct >= 0 ? "+" : ""}{fmt(movePct)}%</span></span>
           </div>
         </div>
       )}
@@ -519,6 +767,104 @@ function NativeSymbolCard({ sym }: { sym: NativeTriggerSymbol }) {
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
+
+function LegacyNativeFireCard({ sym, side }: { sym: NativeTriggerSymbol; side: "LONG" | "SHORT" }) {
+  const isLong = side === "LONG";
+  const token = sym.symbol.replace("-USDT", "");
+  const grid = isLong ? sym.longGrid : sym.shortGrid;
+  const entry = grid[0];
+  const movePct = sym.recentMovePct;
+
+  return (
+    <div className={`relative w-full max-w-[300px] rounded-lg border overflow-hidden ${
+      isLong ? "border-emerald-400/40 bg-emerald-950/30" : "border-rose-400/40 bg-rose-950/30"
+    }`}>
+      <div className={`absolute top-0 left-0 right-0 h-0.5 ${isLong ? "bg-emerald-400" : "bg-rose-400"}`} />
+
+      <div className="p-3">
+        <div className="flex items-start justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <div className={`w-7 h-7 rounded-md flex items-center justify-center ${isLong ? "bg-emerald-500/20" : "bg-rose-500/20"}`}>
+              <img
+                src={CRYPTO_ICONS[token] || CRYPTO_ICONS.BTC}
+                alt={token}
+                className="w-4 h-4 rounded-full"
+                onError={(e) => (e.target as HTMLImageElement).src = CRYPTO_ICONS.BTC}
+              />
+            </div>
+            <div>
+              <div className="text-sm font-bold text-foreground font-mono">{token}</div>
+              <div className={`text-[9px] font-semibold tracking-wider ${isLong ? "text-emerald-400" : "text-rose-400"}`}>
+                {side} · ARMED
+              </div>
+            </div>
+          </div>
+          <Badge className={`text-[9px] px-1.5 py-0 ${
+            isLong
+              ? "bg-emerald-400/20 text-emerald-300 border-emerald-400/30"
+              : "bg-rose-400/20 text-rose-300 border-rose-400/30"
+          }`}>
+            <Zap className="w-2.5 h-2.5 mr-0.5" />{side} FIRE
+          </Badge>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 mb-2">
+          <div className="bg-black/20 rounded-md p-2">
+            <div className="text-[8px] text-muted-foreground/60 uppercase tracking-wider mb-0.5">
+              Preço de Entrada
+            </div>
+            <div className="text-sm font-bold font-mono text-foreground">
+              {fmtPrice(entry?.triggerPrice ?? sym.currentPrice)}
+            </div>
+            <div className="text-[9px] text-muted-foreground/50">USDT</div>
+          </div>
+          <div className="bg-black/20 rounded-md p-2">
+            <div className="text-[8px] text-muted-foreground/60 uppercase tracking-wider mb-0.5">
+              Preço Atual
+            </div>
+            <div className="text-sm font-bold font-mono text-foreground">
+              {fmtPrice(sym.currentPrice)}
+            </div>
+            <div className={`text-[9px] font-semibold ${isLong ? "text-emerald-400" : "text-rose-400"}`}>
+              {movePct >= 0 ? "+" : ""}{fmt(movePct)}% agora
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-1">
+          <div className="flex justify-between text-[9px]">
+            <span className="text-muted-foreground/50">Referência</span>
+            <span className="font-mono text-foreground/80">{fmtPrice(sym.currentPrice)}</span>
+          </div>
+          <div className="flex justify-between text-[9px]">
+            <span className="text-muted-foreground/50">TP alvo</span>
+            <span className={`font-mono font-semibold ${isLong ? "text-emerald-400" : "text-rose-400"}`}>
+              {fmtPrice(entry?.targetPrice)}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NativeFireCard({ sym, side }: { sym: NativeTriggerSymbol; side: "LONG" | "SHORT" }) {
+  const isLong = side === "LONG";
+  const grid = isLong ? sym.longGrid : sym.shortGrid;
+  const entry = grid[0];
+  const movePct = isLong ? Math.abs(sym.recentMovePct) : -Math.abs(sym.recentMovePct);
+
+  return (
+    <CompactTriggerCard
+      token={sym.symbol.replace("-USDT", "")}
+      side={side}
+      entryPrice={entry?.triggerPrice ?? sym.currentPrice}
+      currentPrice={sym.currentPrice}
+      changePct={movePct}
+      targetPrice={entry?.targetPrice}
+    />
+  );
+}
 
 export default function TriggerPage() {
   const qc = useQueryClient();
@@ -537,6 +883,7 @@ export default function TriggerPage() {
   });
 
   const { data: nativeStatus, isLoading: nativeLoading, refetch: nativeRefetch } = useNativeTriggerStatus();
+  const { data: pnlReport } = useTriggerPnlReport();
 
   const enableMut = useEnableTrigger({
     onSuccess: () => {
@@ -593,15 +940,26 @@ export default function TriggerPage() {
     if (s.shortArmed || s.shortFiredAt) armedCards.push({ s, side: "SHORT" });
   }
 
-  const nativeSymbolsFireable = (nativeStatus?.symbols ?? []).filter(s => s.wouldFireLong || s.wouldFireShort);
+  const nativeSymbols = nativeStatus?.symbols ?? [];
+  const nativeSymbolsFireable = nativeSymbols.filter(s => s.wouldFireLong || s.wouldFireShort);
   const muxLocked = nativeStatus?.muxLock?.locked ?? false;
+  const nativePendingBySymbol = new Map<string, { long: number; short: number }>();
+  for (const order of nativeStatus?.pendingOrders ?? []) {
+    const current = nativePendingBySymbol.get(order.symbol) ?? { long: 0, short: 0 };
+    if (order.direction === "LONG") current.long++;
+    else current.short++;
+    nativePendingBySymbol.set(order.symbol, current);
+  }
+  const totalLongArmed = (status?.armedLong ?? 0) + (nativeStatus?.pendingLong ?? 0);
+  const totalShortArmed = (status?.armedShort ?? 0) + (nativeStatus?.pendingShort ?? 0);
+  const totalActiveTriggers = armedCards.length + (nativeStatus?.pendingOrders.length ?? 0);
 
   return (
     <AppShell>
-      <div className="p-4 md:p-6 space-y-4 max-w-5xl mx-auto">
+      <div className="p-4 md:p-6 space-y-4 max-w-[1720px] mx-auto">
 
         {/* ── Header ── */}
-        <div className="flex items-center justify-between">
+        <div className="hidden">
           <div className="flex items-center gap-2.5">
             <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${isEnabled ? "bg-emerald-500/20" : "bg-muted/15"}`}>
               <Target className={`w-4 h-4 ${isEnabled ? "text-emerald-400" : "text-muted-foreground/50"}`} />
@@ -656,7 +1014,7 @@ export default function TriggerPage() {
         </div>
 
         {/* ── Config (collapsible) ── */}
-        {showConfig && (
+        {false && showConfig && (
           <Card className="border-border/20 bg-card/8">
             <CardContent className="px-4 py-4">
               <div className="grid grid-cols-2 md:grid-cols-5 gap-3 items-end">
@@ -707,7 +1065,7 @@ export default function TriggerPage() {
         )}
 
         {/* ── Inactive state ── */}
-        {!isEnabled && (
+        {false && !isEnabled && (
           <Card className="border-border/20 bg-card/5">
             <CardContent className="flex flex-col items-center justify-center py-14 gap-4">
               <div className="w-14 h-14 rounded-full bg-muted/15 flex items-center justify-center">
@@ -728,10 +1086,12 @@ export default function TriggerPage() {
         )}
 
         {/* ── Active: gatilhos armados / disparados ── */}
+        <div>
+          <section className="hidden">
         {isEnabled && (
           <>
             {/* Status bar */}
-            <div className="grid grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
               <Card className="border-border/15 bg-card/8">
                 <CardContent className="px-3 py-2.5 text-center">
                   <div className="text-[9px] text-muted-foreground/50 uppercase tracking-wider">Monitorando</div>
@@ -742,14 +1102,14 @@ export default function TriggerPage() {
               <Card className="border-emerald-500/20 bg-emerald-950/15">
                 <CardContent className="px-3 py-2.5 text-center">
                   <div className="text-[9px] text-emerald-400/60 uppercase tracking-wider">LONG armado</div>
-                  <div className="text-xl font-bold text-emerald-400 mt-0.5">{status?.armedLong ?? 0}</div>
+                  <div className="text-xl font-bold text-emerald-400 mt-0.5">{totalLongArmed}</div>
                   <div className="text-[9px] text-emerald-400/40">gatilhos</div>
                 </CardContent>
               </Card>
               <Card className="border-rose-500/20 bg-rose-950/15">
                 <CardContent className="px-3 py-2.5 text-center">
                   <div className="text-[9px] text-rose-400/60 uppercase tracking-wider">SHORT armado</div>
-                  <div className="text-xl font-bold text-rose-400 mt-0.5">{status?.armedShort ?? 0}</div>
+                  <div className="text-xl font-bold text-rose-400 mt-0.5">{totalShortArmed}</div>
                   <div className="text-[9px] text-rose-400/40">gatilhos</div>
                 </CardContent>
               </Card>
@@ -767,24 +1127,26 @@ export default function TriggerPage() {
             </div>
 
             {/* Gatilhos armados / disparados */}
-            {armedCards.length > 0 ? (
+            {totalActiveTriggers > 0 ? (
               <div>
                 <div className="flex items-center gap-2 mb-3">
                   <Zap className="w-4 h-4 text-amber-400" />
                   <h2 className="text-sm font-semibold text-foreground">Gatilhos Ativos</h2>
                   <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-400">
-                    {armedCards.length}
+                    {totalActiveTriggers}
                   </Badge>
                   <div className="flex-1 h-px bg-border/15" />
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
                   {armedCards.map(({ s, side }) => (
                     <ArmedCard
                       key={`${s.symbol}-${side}`}
                       s={s}
                       side={side}
-                      onReset={(sym) => resetMut.mutate(sym)}
                     />
+                  ))}
+                  {armedCards.length === 0 && (nativeStatus?.pendingOrders ?? []).slice(0, 12).map((o) => (
+                    <PendingOrderRow key={o.id} o={o} />
                   ))}
                 </div>
               </div>
@@ -818,7 +1180,13 @@ export default function TriggerPage() {
                 </CardHeader>
                 <CardContent className="px-4 pb-4 space-y-1">
                   {armedSymbols.map((s) => (
-                    <SymbolRow key={s.symbol} s={s} onReset={(sym) => resetMut.mutate(sym)} />
+                    <SymbolRow
+                      key={s.symbol}
+                      s={s}
+                      onReset={(sym) => resetMut.mutate(sym)}
+                      nativeLongPending={nativePendingBySymbol.get(s.symbol)?.long ?? 0}
+                      nativeShortPending={nativePendingBySymbol.get(s.symbol)?.short ?? 0}
+                    />
                   ))}
                   {armedSymbols.length > 0 && monitoringSymbols.length > 0 && (
                     <div className="flex items-center gap-2 py-1">
@@ -828,7 +1196,13 @@ export default function TriggerPage() {
                     </div>
                   )}
                   {monitoringSymbols.map((s) => (
-                    <SymbolRow key={s.symbol} s={s} onReset={(sym) => resetMut.mutate(sym)} />
+                    <SymbolRow
+                      key={s.symbol}
+                      s={s}
+                      onReset={(sym) => resetMut.mutate(sym)}
+                      nativeLongPending={nativePendingBySymbol.get(s.symbol)?.long ?? 0}
+                      nativeShortPending={nativePendingBySymbol.get(s.symbol)?.short ?? 0}
+                    />
                   ))}
                 </CardContent>
               </Card>
@@ -839,16 +1213,18 @@ export default function TriggerPage() {
         {/* ════════════════════════════════════════════════════════════════════
             Tail Hunter Grid — Motor Nativo de Gatilhos (sempre visível)
         ════════════════════════════════════════════════════════════════════ */}
-        <div>
+          </section>
+
+        <section className="min-w-0">
           <div className="flex items-center gap-2 mb-3">
             <Grid3X3 className="w-4 h-4 text-violet-400" />
-            <h2 className="text-sm font-semibold text-foreground">Tail Hunter Grid</h2>
+            <h2 className="text-sm font-semibold text-foreground">Trigger Edge</h2>
             <Badge variant="outline" className="text-[10px] border-violet-500/30 text-violet-400">
               Motor Nativo
             </Badge>
             {nativeStatus?.config.brutalMode && (
               <Badge className="text-[9px] bg-rose-500/20 text-rose-300 border-rose-500/30">
-                <Zap className="w-2 h-2 mr-0.5" />BRUTAL · {nativeStatus.config.totalLevels} níveis/símbolo
+                <Zap className="w-2 h-2 mr-0.5" />EDGE · {nativeStatus.config.totalLevels} níveis/símbolo
               </Badge>
             )}
             {nativeStatus?.config && !nativeStatus.config.brutalMode && (
@@ -864,35 +1240,41 @@ export default function TriggerPage() {
             <div className="flex-1 h-px bg-border/15" />
             {nativeStatus?.config && (
               <span className="text-[9px] text-muted-foreground/40 shrink-0">
-                L −{fmt(nativeStatus.config.longDetectPct)}% · S +{fmt(nativeStatus.config.shortDetectPct)}%
+                inicial {nativeStatus.config.initialLevelsPerSide}x L -{fmt(nativeStatus.config.initialLongPct)}% · {nativeStatus.config.initialLevelsPerSide}x S +{fmt(nativeStatus.config.initialShortPct)}%
               </span>
             )}
           </div>
 
-          {/* Pending orders summary */}
-          <div className="grid grid-cols-3 gap-3 mb-3">
-            <Card className="border-border/15 bg-card/8">
-              <CardContent className="px-3 py-2.5 text-center">
-                <div className="text-[9px] text-muted-foreground/50 uppercase tracking-wider">Ordens Pending</div>
-                <div className="text-xl font-bold text-foreground mt-0.5">{nativeStatus?.pendingOrders.length ?? 0}</div>
-                <div className="text-[9px] text-muted-foreground/40">na BingX</div>
-              </CardContent>
-            </Card>
-            <Card className="border-emerald-500/20 bg-emerald-950/15">
-              <CardContent className="px-3 py-2.5 text-center">
-                <div className="text-[9px] text-emerald-400/60 uppercase tracking-wider">LONG pending</div>
-                <div className="text-xl font-bold text-emerald-400 mt-0.5">{nativeStatus?.pendingLong ?? 0}</div>
-                <div className="text-[9px] text-emerald-400/40">entradas</div>
-              </CardContent>
-            </Card>
-            <Card className="border-rose-500/20 bg-rose-950/15">
-              <CardContent className="px-3 py-2.5 text-center">
-                <div className="text-[9px] text-rose-400/60 uppercase tracking-wider">SHORT pending</div>
-                <div className="text-xl font-bold text-rose-400 mt-0.5">{nativeStatus?.pendingShort ?? 0}</div>
-                <div className="text-[9px] text-rose-400/40">entradas</div>
-              </CardContent>
-            </Card>
+          <div className="mb-3">
+            <TriggerPnlMicroCard
+              report={pnlReport}
+              pendingTotal={nativeStatus?.pendingOrders.length ?? 0}
+              pendingLong={nativeStatus?.pendingLong ?? 0}
+              pendingShort={nativeStatus?.pendingShort ?? 0}
+            />
           </div>
+
+          {isEnabled && armedCards.length > 0 && (
+            <section className="mb-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Zap className="w-4 h-4 text-amber-400" />
+                <h2 className="text-sm font-semibold text-foreground">Gatilhos Ativos</h2>
+                <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-400">
+                  {armedCards.length}
+                </Badge>
+                <div className="flex-1 h-px bg-border/15" />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-[repeat(auto-fit,minmax(260px,300px))] justify-start gap-2">
+                {armedCards.map(({ s, side }) => (
+                  <ArmedCard
+                    key={`${s.symbol}-${side}`}
+                    s={s}
+                    side={side}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* Pending orders list */}
           {(nativeStatus?.pendingOrders.length ?? 0) > 0 ? (
@@ -906,7 +1288,7 @@ export default function TriggerPage() {
                   </Badge>
                 </CardTitle>
               </CardHeader>
-              <CardContent className="px-4 pb-4 space-y-1.5">
+              <CardContent className="px-3 pb-3 space-y-1.5 max-h-72 overflow-y-auto pr-2">
                 {nativeStatus!.pendingOrders.map((o) => (
                   <PendingOrderRow key={o.id} o={o} />
                 ))}
@@ -931,10 +1313,17 @@ export default function TriggerPage() {
                 <span className="text-[11px] font-semibold text-amber-400">Prontos para disparar</span>
                 <Badge className="text-[9px] bg-amber-500/15 text-amber-400 border-amber-500/25">{nativeSymbolsFireable.length}</Badge>
               </div>
-              <div className="space-y-1">
-                {nativeSymbolsFireable.map((sym) => (
-                  <NativeSymbolCard key={sym.symbol} sym={sym} />
-                ))}
+              <div className="grid grid-cols-1 sm:grid-cols-[repeat(auto-fit,minmax(260px,300px))] justify-start gap-2">
+                {nativeSymbolsFireable.flatMap((sym) => {
+                  const cards = [];
+                  if (sym.wouldFireLong) {
+                    cards.push(<NativeFireCard key={`${sym.symbol}-LONG`} sym={sym} side="LONG" />);
+                  }
+                  if (sym.wouldFireShort) {
+                    cards.push(<NativeFireCard key={`${sym.symbol}-SHORT`} sym={sym} side="SHORT" />);
+                  }
+                  return cards;
+                })}
               </div>
             </div>
           )}
@@ -944,11 +1333,11 @@ export default function TriggerPage() {
             <CardHeader className="pb-2 pt-3.5 px-4">
               <CardTitle className="text-xs font-semibold flex items-center gap-2 text-muted-foreground/70">
                 <Activity className="w-3.5 h-3.5" />
-                Níveis de Grid por Símbolo
-                <Badge variant="outline" className="text-[9px]">{nativeStatus?.symbols.length ?? 0}</Badge>
+                Trigger Sniper
+                <Badge variant="outline" className="text-[9px]">{nativeSymbols.length}</Badge>
                 {nativeStatus?.config.brutalMode ? (
                   <span className="text-[9px] text-rose-400/50 font-normal ml-1">
-                    BRUTAL · L1−10%…L10−22% · S1+20%…S10+40%
+                    MASSIVO · L1−10%…L10−22% · S1+20%…S10+40%
                   </span>
                 ) : (
                   <span className="text-[9px] text-muted-foreground/35 font-normal ml-1">
@@ -957,17 +1346,17 @@ export default function TriggerPage() {
                 )}
               </CardTitle>
             </CardHeader>
-            <CardContent className="px-4 pb-4 space-y-1">
-              {nativeLoading && (nativeStatus?.symbols.length ?? 0) === 0 ? (
+            <CardContent className="px-3 pb-3 space-y-1 max-h-[72vh] overflow-y-auto pr-2">
+              {nativeLoading && nativeSymbols.length === 0 ? (
                 <div className="flex items-center justify-center py-8 text-[11px] text-muted-foreground/40">
                   <RefreshCw className="w-3.5 h-3.5 mr-2 animate-spin" />Carregando dados de candle...
                 </div>
-              ) : (nativeStatus?.symbols ?? []).length === 0 ? (
+              ) : nativeSymbols.length === 0 ? (
                 <div className="flex items-center justify-center py-8 text-[11px] text-muted-foreground/40">
                   Nenhum símbolo configurado
                 </div>
               ) : (
-                (nativeStatus?.symbols ?? [])
+                nativeSymbols
                   .filter(s => !s.wouldFireLong && !s.wouldFireShort)
                   .map((sym) => (
                     <NativeSymbolCard key={sym.symbol} sym={sym} />
@@ -975,6 +1364,7 @@ export default function TriggerPage() {
               )}
             </CardContent>
           </Card>
+        </section>
         </div>
 
       </div>
