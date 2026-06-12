@@ -311,6 +311,11 @@ function PositionRow({
               {position.positionSide}
             </span>
             <span className="text-[9px] text-muted-foreground font-mono">{position.leverage}x</span>
+            {position.source === "demo-ledger" && (
+              <span className="text-[8px] bg-amber-500/15 text-amber-300 px-1.5 py-0.5 rounded border border-amber-500/20">
+                gatilho
+              </span>
+            )}
           </div>
           <div className="mt-1 grid grid-cols-3 gap-2 text-[9px] font-mono text-muted-foreground">
             <span>Qty {qty.toFixed(4)}</span>
@@ -384,6 +389,7 @@ export default function DemoPage() {
   const lastAutoFireAtRef = useRef(0);
   const symbolCooldownRef = useRef<Map<string, number>>(new Map());
   const riskClosingKeysRef = useRef<Set<string>>(new Set());
+  const loggedSniperOpenTradesRef = useRef<Set<string>>(new Set());
   const [sniperLoading, setSniperLoading] = useState(false);
   const [demoConnectLoading, setDemoConnectLoading] = useState(false);
   const [expandedSymbol, setExpandedSymbol] = useState<string | null>(null);
@@ -442,11 +448,37 @@ export default function DemoPage() {
         stopReason: string | null;
         lastCycleAt: number | null;
         openTrades: number;
+        openTradesList: Array<{
+          orderId: string;
+          symbol: string;
+          positionSide: "LONG" | "SHORT";
+          entryPrice: number;
+          quantity: number;
+          marginUsed: number;
+          entryTime: number;
+          btcRegime: string;
+        }>;
         lastCycleSummary: {
           placed: number; skipped: number; scanned: number; btcRegime: string;
+          cycle?: number; durationMs?: number; openTotal?: number;
+          aggressionState?: string; aggressionReason?: string;
           placements: Array<{ symbol: string; positionSide: string; score: number; tier: number }>;
         } | null;
-        config: { globalMax: number; perSymbolMax: number; cycleMs: number };
+        recentHistory?: Array<{
+          cycle: number; startedAt: number; durationMs: number; btcRegime: string;
+          openTotal: number; scanned: number; placed: number; skipped: number;
+          aggressionState?: string; aggressionReason?: string;
+        }>;
+        aggression?: { aggressionState?: string; reason?: string; serviceState?: string };
+        trigger?: {
+          loopRunning: boolean; enabled: boolean; cycleMs: number;
+          hasExecutionCredentials: boolean; lastCycleAt: number | null; lastSkipReason: string | null;
+        };
+        placementInFlight?: boolean;
+        monitorInFlight?: boolean;
+        skippedPlacementOverlaps?: number;
+        skippedMonitorOverlaps?: number;
+        config: { globalMax: number; perSymbolMax: number; cycleMs: number; scoreTiers?: string };
       }>;
     },
     refetchInterval: demoStatus?.connected ? 4000 : false,
@@ -603,6 +635,15 @@ export default function DemoPage() {
     return m > 0 ? `${m}m${s}s` : `${s}s`;
   }
 
+  function fmtAgo(ts: number | null | undefined): string {
+    if (!ts) return "-";
+    const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m`;
+    return `${Math.floor(m / 60)}h`;
+  }
+
   function fireDemoOrder(
     symbol: string,
     positionSide: "LONG" | "SHORT",
@@ -718,6 +759,22 @@ export default function DemoPage() {
   const statusDemoPositions =
     ((demoStatus as { positions?: DemoPosition[] } | undefined)?.positions ?? []);
   const visibleDemoPositions = demoPositions.length > 0 ? demoPositions : statusDemoPositions;
+
+  useEffect(() => {
+    for (const trade of sniperStatus?.openTradesList ?? []) {
+      if (loggedSniperOpenTradesRef.current.has(trade.orderId)) continue;
+      loggedSniperOpenTradesRef.current.add(trade.orderId);
+      addLog({
+        symbol: trade.symbol,
+        positionSide: trade.positionSide,
+        placed: true,
+        observationMode: false,
+        gateRejects: ["TRIGGER_OPEN"],
+        message: `Gatilho conciliado no Demo Lab @ ${Number(trade.entryPrice).toFixed(4)}`,
+        orderId: trade.orderId,
+      });
+    }
+  }, [sniperStatus?.openTradesList]);
 
   useEffect(() => {
     if (demoConnected) {
@@ -861,7 +918,7 @@ export default function DemoPage() {
                 <FlaskConical className="w-5 h-5 text-blue-400" />
               </div>
               <div>
-                <h1 className="text-lg font-bold tracking-tight">Demo Lab</h1>
+                <h1 className="text-lg font-bold tracking-tight">Edge Lab</h1>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   VST account · sniper lógica completa · sem risco real
                 </p>
@@ -909,7 +966,7 @@ export default function DemoPage() {
             <div className="px-3 py-2.5 space-y-1.5">
               <div className="flex items-center gap-1.5">
                 <DollarSign className="w-3 h-3 text-blue-400" />
-                <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">Conta Demo</span>
+                <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">Conta </span>
                 {demoConnected && <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse ml-auto" />}
               </div>
               {!demoConnected ? (
@@ -1008,8 +1065,48 @@ export default function DemoPage() {
                   <span className={`px-1 py-0.5 rounded text-[8px] font-mono font-bold ${sniperStatus.lastCycleSummary.btcRegime === "BULL" ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>{sniperStatus.lastCycleSummary.btcRegime}</span>
                   <span className="px-1 py-0.5 rounded text-[8px] font-mono bg-muted/15 text-muted-foreground">{sniperStatus.lastCycleSummary.scanned} scanned</span>
                   <span className="px-1 py-0.5 rounded text-[8px] font-mono bg-green-500/10 text-green-400">+{sniperStatus.lastCycleSummary.placed} placed</span>
+                  {sniperStatus.lastCycleSummary.skipped > 0 && (
+                    <span className="px-1 py-0.5 rounded text-[8px] font-mono bg-amber-500/10 text-amber-400">{sniperStatus.lastCycleSummary.skipped} skipped</span>
+                  )}
                 </div>
               )}
+              <div className="space-y-1 rounded border border-border/10 bg-muted/5 p-1.5">
+                <div className="flex flex-wrap gap-1">
+                  <span className={`px-1 py-0.5 rounded text-[8px] font-mono ${sniperStatus?.aggression?.aggressionState === "PAUSED" ? "bg-red-500/15 text-red-400" : "bg-green-500/10 text-green-400"}`}>
+                    {sniperStatus?.aggression?.aggressionState ?? "AGG --"}
+                  </span>
+                  <span className={`px-1 py-0.5 rounded text-[8px] font-mono ${sniperStatus?.trigger?.loopRunning ? "bg-green-500/10 text-green-400" : "bg-amber-500/10 text-amber-400"}`}>
+                    trigger {sniperStatus?.trigger?.loopRunning ? "on" : "off"}
+                  </span>
+                  <span className={`px-1 py-0.5 rounded text-[8px] font-mono ${sniperStatus?.trigger?.hasExecutionCredentials ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"}`}>
+                    creds {sniperStatus?.trigger?.hasExecutionCredentials ? "ok" : "no"}
+                  </span>
+                  {(sniperStatus?.placementInFlight || sniperStatus?.monitorInFlight) && (
+                    <span className="px-1 py-0.5 rounded text-[8px] font-mono bg-blue-500/10 text-blue-400">in-flight</span>
+                  )}
+                </div>
+                {(sniperStatus?.aggression?.reason || sniperStatus?.lastCycleSummary?.aggressionReason || sniperStatus?.trigger?.lastSkipReason || sniperStatus?.stopReason) && (
+                  <p className="line-clamp-2 font-mono text-[8px] leading-snug text-amber-300/80">
+                    {sniperStatus?.aggression?.reason
+                      ?? sniperStatus?.lastCycleSummary?.aggressionReason
+                      ?? sniperStatus?.trigger?.lastSkipReason
+                      ?? sniperStatus?.stopReason}
+                  </p>
+                )}
+                {(sniperStatus?.recentHistory?.length ?? 0) > 0 && (
+                  <div className="space-y-0.5">
+                    {sniperStatus!.recentHistory!.slice(-3).reverse().map((cycle) => (
+                      <div key={cycle.cycle} className="flex items-center justify-between gap-2 rounded bg-black/10 px-1 py-0.5 text-[8px]">
+                        <span className="font-mono text-muted-foreground">#{cycle.cycle} · {fmtAgo(cycle.startedAt)}</span>
+                        <span className="font-mono text-muted-foreground">{cycle.scanned}s/{cycle.placed}p/{cycle.skipped}k</span>
+                        <span className={cycle.aggressionState === "PAUSED" ? "text-red-400" : cycle.placed > 0 ? "text-green-400" : "text-amber-400"}>
+                          {cycle.aggressionState ?? (cycle.placed > 0 ? "PLACED" : "WAIT")}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -1061,7 +1158,7 @@ export default function DemoPage() {
                   <CardTitle className="text-sm font-semibold flex items-center justify-between gap-2">
                     <span className="flex items-center gap-2">
                       <TrendingDown className="w-4 h-4 text-primary" />
-                      Posições Demo
+                      Posições Futuros
                     </span>
                     <span className="text-[10px] font-mono text-muted-foreground">
                       {visibleDemoPositions.length} aberta{visibleDemoPositions.length === 1 ? "" : "s"}
@@ -1102,7 +1199,7 @@ export default function DemoPage() {
         <div className="p-1.5 rounded-lg bg-primary/10">
           <Radio className="w-3.5 h-3.5 text-primary" />
         </div>
-        <CardTitle className="text-sm font-semibold tracking-tight">Scanner Sniper</CardTitle>
+        <CardTitle className="text-sm font-semibold tracking-tight">Live Sniper</CardTitle>
         {scan && (
           <span className={`ml-2 text-[10px] font-mono font-bold px-2 py-0.5 rounded-full ${
             candidates.length > 0 ? "bg-green-500/20 text-green-400" : "bg-muted/30 text-muted-foreground"
