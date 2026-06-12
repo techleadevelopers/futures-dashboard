@@ -1,218 +1,560 @@
-# BingX Futures Terminal
+# BingX Authenticator Panel
 
-`bingx-futures-terminal` is a futures execution and monitoring dashboard for selective, high-discipline scalping on BingX Perpetual Futures.
+Painel e motor de execução para BingX Perpetual Futures, com suporte a conta
+live, Demo/VST, gatilhos nativos, proteção TP/SL, telemetria e análise auxiliar
+do Quant Brain.
 
-The system is designed for:
+> Software experimental. Execução alavancada envolve risco real, taxas,
+> slippage, funding, correlação e possibilidade de liquidação.
 
-- BTC-compass-first signal filtering (trade alts in BTC direction only)
-- telemetry-driven edge calibration from realized outcomes
-- adaptive gate thresholds learned from historical win/loss data
-- selective execution: always scanning, mostly rejecting, occasionally firing
-- capital preservation over raw trade count
+## Direção Atual Do Projeto
 
-This is not a directional indicator bot, a signal copier, or a generic trading dashboard.
+O projeto segue uma arquitetura **executor-first**.
 
-It is a **discipline engine** focused on one narrow problem:
+O backend Node.js é a autoridade operacional. Ele:
 
-`BTC regime signal → alt setup detection → EV/risk gate → order execution → realized PnL`
+- lê candles e preços de mercado;
+- determina a direção pelo `EDGE_STRATEGY`;
+- valida candle completo, score, separação, volume e contexto BTC;
+- calcula custo de taxa, slippage e funding;
+- aplica gates de risco, exposição, correlação, stacking e deduplicação;
+- calcula margem, quantidade e alavancagem;
+- configura a alavancagem na BingX/VST;
+- anexa TP/SL e envia, monitora, reconcilia e fecha ordens;
+- registra o resultado realizado e a qualidade da execução.
 
----
+O Quant Brain e a IA atuam como **camada analítica auxiliar**:
 
-## Objective
+- calculam features, score, probabilidade e expectativa;
+- analisam regime, notícias, drift e qualidade histórica;
+- recebem outcomes e produzem telemetria/recomendações;
+- podem operar em `shadow` para comparação e aprendizado;
+- não substituem as barreiras determinísticas do executor.
 
-The terminal continuously monitors market conditions and account state. Execution is only considered when the system believes:
+No modo econômico recomendado atual:
 
-- BTC direction is clear and not whipsawing (compass gate)
-- the target alt is showing a qualifying setup in BTC's direction
-- expected value (EV) = (win_rate × avg_win) − (loss_rate × avg_loss) > configured threshold
-- the symbol does not appear in the toxicity list (symbols with negative edge historically)
-- current margin exposure stays within capital controls
-
-The terminal is intended to stay on continuously, but not to execute continuously.
-
-Operationally it behaves as:
-
-`always scanning → mostly rejecting → occasionally executing`
-
----
-
-## Architecture Pipeline
-
-```
-BTC 5s ticker
-    │
-    ▼
-Regime gate  ─── BEAR → block long entries, allow short entries
-    │            BULL → block short entries, allow long entries
-    ▼
-Setup scan (symbol list)
-    │
-    ▼
-EV gate:  EV = (WR × avgWin) − (1−WR) × |avgLoss|
-    │     only pass if EV > EV_MIN_THRESHOLD
-    ▼
-Toxicity gate:  reject symbols with negative realized PnL over N trades
-    │
-    ▼
-Capital gate:  reject if margin used > MAX_MARGIN_UTILIZATION
-    │
-    ▼
-Execution → BingX REST API (signed HMAC-SHA256)
-    │
-    ▼
-Telemetry: realized PnL, gate reason, hour, regime, symbol, fee
-    │
-    ▼
-Adaptive calibration: recalculate WR, profit factor, EV per symbol/hour/regime
+```env
+QUANT_BRAIN_ENABLED=true
+QUANT_BRAIN_GATE_MODE=off
 ```
 
----
+Em `off`, não existe requisição de edge por candidato/entrada. Outcomes
+realizados ainda podem ser sincronizados e as telas analíticas consultam o
+serviço somente quando abertas. Use `shadow` apenas durante uma campanha de
+comparação e `enforce` somente de forma deliberada.
 
-## Telemetry & Adaptive Learning
+## Pipeline De Execução
 
-The Analysis page is the "war room" — it surfaces:
-
-- **Win rate** (actual fills with profit data, not theoretical)
-- **Profit factor** = avg_win / |avg_loss| — must be > 1.5 for viable scalp
-- **EV gate quality**: is the current WR × PF combination producing positive expected value?
-- **Regime breakdown**: separate WR/PF for BTC bull vs bear regimes
-- **Hour-of-day toxicity**: which trading hours are profitable vs destructive
-- **Symbol toxicity**: symbols with negative cumulative PnL are flagged as toxic, auto-rejected
-- **Rolling edge window**: last 10 / 25 / 50 trades — edge drift detection
-- **Fee drag**: total commission vs gross PnL — net PnL = gross − fee drag
-- **Gate reject simulation**: what threshold would have filtered the losing trades?
-
-The goal is to move from raw order data into a measured research loop:
-
-`raw orders → telemetry rollup → adaptive gate recalibration → sniper execution`
-
----
-
-## Execution Modes — Intelligence Presets
-
-The bot has three built-in capital/strategy presets selectable from the **Bot** page without touching `.env`.
-Each mode applies leverage, banca (margin per trade), and execution strategy as a runtime override.
-Resetting returns all parameters to ENV defaults.
-
-### Mode 1 — Easy (🔭 SCOUT)
-| Parameter | Value |
-|---|---|
-| Banca / trade | **$0.50 USDT** |
-| Leverage | **18×** ISOLATED |
-| Nocional / trade | $9 USDT |
-| Execution | Single entry (individual gate check) |
-
-**Purpose:** Calibration and strategy validation with minimal real exposure. Run Easy for 50–100 trades before advancing to Standard. Losses are bounded to ~$0.50 per trade regardless of SL width.
-
-### Mode 2 — Standard (🎯 SNIPER)
-| Parameter | Value |
-|---|---|
-| Banca / trade | **$2.00 USDT** |
-| Leverage | **18×** ISOLATED |
-| Nocional / trade | $36 USDT |
-| Execution | Single entry (individual gate check) |
-
-**Purpose:** Normal operating mode once EV is positive and telemetry shows PF ≥ 1.5 from ≥50 trades. Meaningful P&L with controlled exposure per position.
-
-### Mode 3 — Aggressive (🔥 ALPHA)
-| Parameter | Value |
-|---|---|
-| Banca / trade | **$5.00 USDT** |
-| Leverage | **18×** ISOLATED |
-| Nocional / trade | $90 USDT |
-| Execution | **Bulk entry** — up to 10 orders/second |
-| Rate limiter | Token-bucket, hard cap 10/s (BingX API limit) |
-
-**Purpose:** Maximum throughput when multiple symbols clear all gates simultaneously (e.g. BTC breakout + multiple alts aligning). The `/api/bot/order/bulk` endpoint accepts up to 50 orders per request and executes them sequentially through a token-bucket rate limiter so BingX's 100 orders/10s cap is never breached.
-
-Each order in a bulk batch passes the full gate pipeline (regime, EV, win rate, capital) independently — a gate rejection on one symbol does not stop the rest of the batch.
-
-**Safeguard:** Only activate Aggressive after:
-- EV > 0 across ≥100 trades
-- Profit Factor ≥ 1.5 (from Analysis page)
-- Hour blacklist tuned to remove toxic sessions
-- `SCALP_ALLOW_EXECUTION=true` confirmed in observation mode first
-
-### Mode API
-```
-GET  /api/bot/modes              → list all presets + activeMode
-POST /api/bot/mode               → { mode: "easy" | "standard" | "aggressive" }
-POST /api/bot/mode/reset         → revert to ENV
-POST /api/bot/order/bulk         → { orders: [...], ordersPerSecond?: 1-10 }
+```text
+Ticker/candle BingX
+    -> estratégia de direção do executor
+    -> validação de candle e contexto BTC
+    -> custo: taxa + slippage + funding
+    -> risco, exposição, correlação e stacking
+    -> sizing: margem + quantidade + alavancagem
+    -> configuração da alavancagem na corretora
+    -> ordem com TP/SL
+    -> monitoramento e reconciliação
+    -> outcome realizado e auditoria
+    -> Quant Brain/IA para análise, score e aprendizado
 ```
 
----
+O cálculo econômico mínimo é:
 
-## Design Principles
+```text
+ganho líquido = alvo bruto - taxa round-trip - slippage - funding
+perda líquida = stop bruto + taxa round-trip + slippage + funding
+WR break-even = perda líquida / (ganho líquido + perda líquida)
+```
 
-- Reject most flow. The edge comes from what you don't enter, not just what you do.
-- Bias decisions using both short-horizon state (current BTC regime) and historical outcomes (symbol WR, hour toxicity)
-- Optimize for net PnL, not raw trade count
-- Capital preservation > execution count. A flat day beats a blown account.
-- Gate thresholds must be earned by telemetry, not guessed.
+## Componentes
 
----
+```text
+backend/
+  src/routes/bot.ts             execução live, bulk e autopilot
+  src/routes/demo.ts            Demo/VST, triggers e Demo Sniper
+  src/lib/candleEdge.ts         leitura e score de candles
+  src/lib/edgeStrategy.ts       direção contrarian/continuation/hybrid
+  src/lib/executionRisk.ts      custos, slippage, exposição e correlação
+  src/lib/positionSizing.ts     margem, risco e alavancagem
+  src/lib/entryProtection.ts    TP/SL e confirmação de entrada
+  src/lib/quantBrainClient.ts   integração analítica com Quant Brain
 
-## Run & Operate
+artifacts/bingx-dashboard/
+  src/pages/trigger.tsx         gatilhos e Tail Hunter
+  src/pages/demo.tsx            laboratório Demo/VST
+  src/pages/analysis.tsx        telemetria e análise
 
-Local setup:
+quant-brain/
+  api/server.py                 API analítica
+  core/feature_engine.py        features de mercado
+  analyst/ai_analyst.py         análise narrativa opcional
+```
 
-1. Install Node.js 24 and pnpm.
-2. Create `.env` from `.env.example`.
-3. Set at least `SESSION_SECRET` to a long random string.
-4. Run `pnpm install`.
+## Execução Local
 
-Run locally:
+Pré-requisitos: Node.js, pnpm e Python para o Quant Brain.
 
-- `pnpm run dev:backend` - API server on `http://localhost:8080`
-- `pnpm run dev:frontend` - frontend dashboard on `http://localhost:5173`
-- `pnpm run typecheck` - full typecheck
-- `pnpm --filter @workspace/api-spec run codegen` - regenerate API client from OpenAPI spec
+```powershell
+pnpm.cmd install
+pnpm.cmd run dev:backend
+pnpm.cmd run dev:frontend
+```
 
-The frontend Vite dev server proxies `/api` to `http://localhost:8080`, so keep backend and frontend running in separate terminals.
+Backend: `http://localhost:8080`
 
-Database note: the current API routes persist telemetry to `telemetry.jsonl`. `DATABASE_URL` is only needed if you run the drizzle/db package commands.
+Frontend: `http://localhost:5173`
 
-## Stack
+Validação:
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5 + express-session + HMAC-SHA256 signing
-- Frontend: React + Vite + Tailwind CSS + shadcn/ui + wouter
-- BingX: REST API proxy (CORS-safe, secret never leaves server)
-- Codegen: Orval from OpenAPI spec
+```powershell
+pnpm.cmd --dir backend run build
+pnpm.cmd --dir artifacts\bingx-dashboard run typecheck
+pnpm.cmd --dir artifacts\bingx-dashboard run build
+```
 
-## Where things live
+## Variáveis De Ambiente
 
-- `lib/api-spec/openapi.yaml` — API contract (source of truth)
-- `artifacts/api-server/src/routes/bingx.ts` — BingX proxy with HMAC signing
-- `artifacts/api-server/src/app.ts` — Express + session middleware
-- `artifacts/bingx-dashboard/src/pages/analysis.tsx` — telemetry war room
-- `artifacts/bingx-dashboard/src/pages/overview.tsx` — account summary
-- `artifacts/bingx-dashboard/src/components/app-shell.tsx` — sidebar + BTC compass
-- `lib/api-client-react/src/custom-fetch.ts` — fetch with credentials: include
+Nunca coloque valores reais no Git. Use placeholders nos arquivos de exemplo e
+configure segredos diretamente no Railway/Vercel ou em arquivos `.env` locais
+ignorados pelo Git.
 
-## Security
+### Frontend
 
-- API Key + Secret stored only in server-side session (in-memory, never database)
-- Secret Key never sent to frontend, never logged
-- HMAC-SHA256 signed per-request with current timestamp
-- Session cleared on disconnect or server restart
-- Recommend read-only API key with no withdrawal permissions
+Arquivo: `artifacts/bingx-dashboard/.env`
 
-## BingX API
+```env
+VITE_API_URL=http://localhost:8080
+```
 
-- Base URL: `https://open-api.bingx.com`
-- Docs: https://bingx-api.github.io/docs/#/en-us/swapV2/
-- Auth: `X-BX-APIKEY` header + `signature` query param (HMAC-SHA256 of all params)
-- BingX does NOT support username/password login via API — only API Key + Secret
+### Backend Node.js
 
-## Gotchas
+Arquivo: `backend/.env`. Exemplo completo:
 
-- BTC ticker endpoint is public (no auth), all account endpoints require session
-- Session expires on server restart — reconnect required in development
-- `allOrders` endpoint may not return `profit` field if the order has no position close
-- BingX `positionAmt` is 0 for closed positions — filter these before displaying
+```env
+# Servidor, sessão e CORS
+PORT=8080
+SESSION_SECRET=change-me-to-a-long-random-secret
+LOG_LEVEL=info
+PRETTY_LOGS=false
+FRONTEND_URL=http://localhost:5173
+FRONTEND_URLS=
+CORS_ORIGIN=
+BACKEND_URL=http://localhost:8080
+REQUEST_BODY_LIMIT=256kb
 
-## User preferences
+# Banco é opcional no executor; não use credencial real neste arquivo de exemplo
+DATABASE_URL=
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+# Segurança de execução
+EXECUTION_ENV=demo
+BINGX_CREDENTIAL_ENV=demo
+REAL_EXECUTION_ENABLED=false
+REAL_EXECUTION_CONFIRMATION=
+LIVE_ACCOUNT_ID=
+ADMIN_API_TOKEN=
+SCALP_ALLOW_EXECUTION=false
+
+# Estado e persistência
+RUNTIME_DATA_DIR=
+DEMO_TRADE_DATA_DIR=
+CONFIG_STATE_PATH=
+BOT_MODE_STATE_PATH=
+LOAD_PERSISTED_CONFIG=false
+LOAD_PERSISTED_MODE=false
+PERSIST_CONFIG_ON_START=false
+ADAPTIVE_ENGINE_STATE_PATH=
+ADAPTIVE_ENGINE_BACKUP_PATH=
+MARKET_EVENT_CLAIMS_PATH=
+LIVE_WATCHER_JOURNAL_PATH=
+LIVE_WATCHER_DEADLETTER_PATH=
+LIVE_WATCHER_POLL_MS=5000
+OUTCOME_STORE=jsonl
+OUTCOME_SQLITE_PATH=
+LIVE_READINESS_CACHE_TTL_MS=5000
+TELEMETRY_DIR=.
+TELEMETRY_FLUSH_INTERVAL_MS=5000
+TELEMETRY_MAX_SIZE_MB=50
+TELEMETRY_MAX_BACKUPS=10
+TELEMETRY_COMPRESS_BACKUPS=false
+TRIGGER_OUTCOMES_MAX_LINES=50000
+
+# Quant Brain: camada analítica
+QUANT_BRAIN_ENABLED=true
+QUANT_BRAIN_URL=
+QUANT_BRAIN_GATE_MODE=off
+QUANT_BRAIN_API_TOKEN=
+QUANT_BRAIN_TIMEOUT_MS=8000
+QB_SNIPER_TIMEOUT_MS=8000
+QB_ORDER_TIMEOUT_MS=8000
+QUANT_BRAIN_SHADOW_EDGE_TIMEOUT_MS=2500
+QUANT_BRAIN_ENFORCE_EDGE_TIMEOUT_MS=8000
+QUANT_BRAIN_INTELLIGENCE_TIMEOUT_MS=5000
+QUANT_BRAIN_INTELLIGENCE_SIDECAR_TIMEOUT_MS=2000
+QUANT_BRAIN_INTELLIGENCE_HEALTH_TIMEOUT_MS=2000
+QUANT_BRAIN_INTELLIGENCE_EDGE_CACHE_TTL_MS=15000
+QUANT_BRAIN_INTELLIGENCE_SIDECAR_CACHE_TTL_MS=15000
+QUANT_BRAIN_INTELLIGENCE_STALE_TTL_MS=60000
+QUANT_BRAIN_SUMMARY_TIMEOUT_MS=1500
+QUANT_BRAIN_SUMMARY_CACHE_TTL_MS=15000
+QUANT_BRAIN_MAX_FEATURE_AGE_MS=900000
+QUANT_BRAIN_MAX_MARKET_DATA_AGE_MS=15000
+QUANT_BRAIN_MAX_PREDICTION_AGE_MS=60000
+QUANT_BRAIN_OUTBOX_PATH=
+QUANT_BRAIN_OUTCOME_SYNC_INTERVAL_MS=30000
+QUANT_BRAIN_OUTCOME_SYNC_BATCH_SIZE=25
+QUANT_BRAIN_RETRY_BUDGET_PER_MINUTE=10
+QB_AUTO_RECOVERY_ENABLED=true
+QB_AUTO_RECOVERY_COOLDOWN_MS=300000
+QB_AUTO_RECOVERY_WATCHDOG_MS=30000
+
+# Versões de contrato e política
+QUANT_BRAIN_POLICY_VERSION=qb-policy-v1
+QUANT_BRAIN_MODEL_VERSION=qb-model-v1
+QUANT_BRAIN_FEATURE_VERSION=qb-feature-v1
+QUANT_BRAIN_LABEL_VERSION=qb-label-v1
+SNIPER_POLICY_VERSION=sniper-policy-v1
+SNIPER_STRATEGY_VERSION=sniper-strategy-v1
+SCORE_CALIBRATION_VERSION=score-calibration-v1
+SIZING_POLICY_VERSION=sizing-policy-v1
+ROTATION_POLICY_VERSION=rotation-policy-v1
+PLAYBOOK_VERSION=playbook-v1
+EXPERIMENT_ARM=champion
+
+# Estratégia e execução
+SCALP_LEVERAGE=14
+SCALP_MARGIN_PER_TRADE=5
+SCALP_MAX_CONCURRENT_POSITIONS=10
+SCALP_MAX_MARGIN_UTILIZATION=0.5
+SCALP_TAKE_PROFIT_PCT=0.45
+SCALP_STOP_LOSS_PCT=0.25
+MIN_REWARD_RISK_RATIO=0.75
+MIN_PROBABILITY_EDGE=0.03
+SCALP_EV_MIN_THRESHOLD=0
+SCALP_WIN_RATE_MIN=0
+SCALP_PROFIT_FACTOR_MIN=0
+SCALP_BTC_REGIME_REQUIRED=false
+SCALP_ALLOW_COUNTER_REGIME_SCALP=true
+SCALP_BTC_REGIME_THRESHOLD_PCT=0.5
+SCALP_SYMBOLS=
+SCALP_HOUR_BLACKLIST=
+SCALP_ORDER_TYPE=MARKET
+SCALP_MARGIN_TYPE=ISOLATED
+SCALP_MAX_SESSION_LOSS=20
+SCALP_TAKER_FEE_BPS=5
+SCALP_SLIPPAGE_BPS_PER_SIDE=2
+SCALP_ESTIMATED_FUNDING_COST_PCT=0
+SCALP_MIN_EDGE_OVER_COST_PCT=0.03
+SCALP_SIGNAL_DEDUPE_SECONDS=30
+SCALP_SIGNAL_SOURCE_TYPE=live
+SCALP_REQUIRE_FULL_15M_CONTEXT=true
+SCALP_ATTACH_PROTECTION_ORDERS=true
+SCALP_PREVENT_HEDGED_POSITIONS=true
+
+# Candle e direção: autoridade do executor
+SCALP_CANDLE_MIN_SCORE=0.35
+SCALP_CANDLE_MIN_SEPARATION=0.03
+EDGE_STRATEGY=contrarian
+EDGE_PUMP_SHORT_PCT=0.80
+EDGE_DUMP_LONG_PCT=0.80
+EDGE_FORCE_SCORE=0.86
+EDGE_STRICT_OPPOSITE=true
+EDGE_CONTINUATION_ENABLED=false
+EDGE_CONTINUATION_WEIGHT=0.30
+EDGE_CONTRARIAN_WEIGHT=0.70
+EDGE_LONG_RSI_MAX=42
+EDGE_SHORT_RSI_MIN=58
+EDGE_VOLUME_MIN_RATIO=1.10
+EDGE_MIN_SCORE_TO_ENTER=0.35
+MIN_TICK_DENSITY_1M=0
+
+# Desempenho recente
+SCALP_MAX_DAILY_LOSS_PCT=0
+SCALP_MAX_DRAWDOWN_PCT=0
+SCALP_MAX_CONSECUTIVE_LOSSES=0
+SCALP_RECENT_EDGE_WINDOW_HOURS=4
+SCALP_RECENT_EDGE_MIN_TRADES=8
+SCALP_RECENT_EDGE_MIN_PROFIT_FACTOR=0.8
+SCALP_RECENT_EDGE_MAX_CONSECUTIVE_LOSSES=4
+
+# Stacking e autopilot
+SCALP_MAX_POSITIONS_PER_SYMBOL=1
+SCALP_POSITION_STACKING_ENABLED=false
+SCALP_AUTOPILOT_INTERVAL_SEC=20
+SCALP_AUTOPILOT_MAX_CANDIDATES=8
+SCALP_SNIPER_MIN_COMBINED_SCORE=0.20
+AGGRESSION_NORMAL_SYMBOL_LIMIT=2
+AGGRESSION_BOOST_SYMBOL_LIMIT=3
+AGGRESSION_MAX_SNIPER_SYMBOL_LIMIT=4
+
+# Position sizing
+POSITION_SIZING_ENABLED=true
+BASE_RISK_PCT=0.005
+MAX_RISK_PCT_PER_TRADE=0.015
+MAX_TOTAL_RISK_PCT=0.08
+MAX_SYMBOL_RISK_PCT=0.03
+MIN_MARGIN=5
+SNIPER_ML_SCORE_WEIGHT=0.25
+ML_MICRO_EV_PCT=0.001
+ML_MAX_SNIPER_EV_PCT=0.0015
+ML_BOOST_PROB_BUFFER=0.03
+ML_MAX_SNIPER_PROB_BUFFER=0.06
+ML_KELLY_FRACTION_CAP=0.25
+ML_MICRO_KELLY_FRACTION=0.02
+
+# Kill switch e degradação
+KILL_SWITCH_LOSS_STREAK=5
+KILL_SWITCH_LOSS_WINDOW_MS=3600000
+KILL_SWITCH_LOSS_STREAK_WINDOW_MS=3600000
+KILL_SWITCH_SOFT_COOLDOWN_MS=300000
+KILL_SWITCH_HARD_COOLDOWN_MS=1800000
+KILL_SWITCH_RECOVERY_MIN_MS=60000
+KILL_SWITCH_DRAWDOWN_SOFT_PCT=3
+KILL_SWITCH_DRAWDOWN_HARD_PCT=6
+KILL_SWITCH_SLIPPAGE_P95_SOFT=8
+KILL_SWITCH_SLIPPAGE_P95_HARD=15
+KILL_SWITCH_LATENCY_P95_SOFT_MS=1500
+KILL_SWITCH_LATENCY_P95_HARD_MS=4000
+KILL_SWITCH_FAILED_ORDER_SOFT_RATE=0.15
+KILL_SWITCH_FAILED_ORDER_HARD_RATE=0.30
+KILL_SWITCH_BTC_CHAOS_PCT=3
+KILL_SWITCH_EXIT_MONITOR_DELAY_HARD_MS=60000
+ROLLING_LOSS_WINDOW_MS=3600000
+ROLLING_LOSS_PAUSE_USD=0
+ROLLING_LOSS_PCT_DEGRADED=-5
+ROLLING_LOSS_PCT_PAUSE=-10
+QB_FAILURE_DEGRADED=3
+QB_FAILURE_SHADOW=8
+API_ERROR_DEGRADED=5
+API_ERROR_SHADOW=15
+CONSECUTIVE_LOSS_DEGRADED=8
+CONSECUTIVE_LOSS_PAUSE=15
+STALE_DATA_SHADOW_MS=90000
+
+# Live readiness
+LIVE_READINESS_MICRO_MAX_POSITIONS=1
+LIVE_READINESS_LIMITED_MAX_POSITIONS=2
+LIVE_READINESS_STANDARD_MAX_POSITIONS=2
+LIVE_READINESS_MICRO_MAX_MARGIN=5
+LIVE_READINESS_LIMITED_MAX_MARGIN=25
+LIVE_READINESS_STANDARD_MAX_MARGIN=100
+LIVE_READINESS_MICRO_DAILY_LOSS=5
+LIVE_READINESS_LIMITED_DAILY_LOSS=25
+LIVE_READINESS_STANDARD_DAILY_LOSS=100
+LIVE_READINESS_MICRO_SCORE_MIN=0.55
+LIVE_READINESS_LIMITED_SCORE_MIN=0.60
+LIVE_READINESS_STANDARD_SCORE_MIN=0.65
+
+# Demo/VST e campanhas
+DEMO_SNIPER_GLOBAL_MAX=50
+DEMO_SNIPER_PER_SYMBOL_MAX=10
+DEMO_SNIPER_CYCLE_MS=30000
+DEMO_SNIPER_MONITOR_MS=12000
+DEMO_SNIPER_POSITION_CONFIRM_GRACE_MS=60000
+DEMO_SNIPER_CONTRARIAN_SCORE=0.60
+DEMO_SNIPER_AUTOPLACE_ENABLED=true
+DEMO_SNIPER_INITIAL_TRIGGERS_ENABLED=true
+DEMO_SNIPER_CANDIDATE_TRIGGERS_ENABLED=true
+DEMO_SNIPER_REQUIRE_EDGE_TRIGGER=true
+DEMO_TRIGGER_DEVIATION_LOOP_ENABLED=true
+DEMO_STACKING_COOLDOWN_MS=60000
+DEMO_STACKING_MAX_CAMPAIGN_DRAWDOWN_PCT=5
+DEMO_CAMPAIGN_WINDOW_MS=86400000
+DEMO_MAX_CLOSED_CACHE=5000
+DEMO_MAX_CLOSED_LINES=50000
+
+# Gatilhos nativos
+NATIVE_TRIGGER_ENABLED=true
+NATIVE_TRIGGER_BRUTAL_MODE=false
+NATIVE_TRIGGER_COOLDOWN_MS=15000
+NATIVE_TRIGGER_EXPIRATION_SECONDS=900
+NATIVE_TRIGGER_INITIAL_LEVELS_PER_SIDE=20
+NATIVE_TRIGGER_INITIAL_LONG_PCT=0.40
+NATIVE_TRIGGER_INITIAL_SHORT_PCT=0.40
+NATIVE_TRIGGER_INITIAL_EXPIRATION_SECONDS=900
+NATIVE_TRIGGER_BASE_TP_PCT=0.65
+TRIGGER_CYCLE_MS=15000
+TRIGGER_EXPIRATION_SECONDS=900
+TRIGGER_LIFECYCLE_POLL_MS=5000
+MUX_LOCK_CANDLES=1
+
+# Mass entry
+MASS_ENTRY_AUTOPILOT_ENABLED=false
+MASS_ENTRY_AUTOPILOT_MAX_ZONES=2
+MASS_ENTRY_AUTOPILOT_MIN_CONFLUENCE=0.60
+MASS_ENTRY_AUTOPILOT_MARGIN_PER_ZONE=
+MASS_ENTRY_AUTOPILOT_LEVERAGE=
+MASS_ENTRY_ARM_DEDUPE_MS=100
+MASS_ENTRY_TRIGGER_EXPIRATION_SECONDS=900
+EXECUTION_TRACE_MAX_ITEMS=300
+
+# Cliente BingX
+BINGX_REQUEST_TIMEOUT_MS=8000
+BINGX_MAX_RETRIES=2
+BINGX_RETRY_BASE_MS=200
+```
+
+As credenciais BingX são enviadas pelo login e mantidas na sessão server-side.
+Não é necessário declarar `API_KEY` ou `SECRET_KEY` no executor. Se algum
+serviço legado ainda usar essas variáveis, migre para sessão ou para
+`BINGX_API_KEY`/`BINGX_SECRET_KEY` somente no serviço privado apropriado.
+
+### Quant Brain
+
+Arquivo: `quant-brain/.env`. Exemplo completo:
+
+```env
+BACKEND_URL=http://localhost:8080
+FRONTEND_URLS=http://localhost:5173
+PORT=9000
+LOG_LEVEL=info
+
+# Banco e autenticação
+DATABASE_URL=
+QUANT_BRAIN_DATABASE_URL=
+QUANT_BRAIN_DB_SCHEMA=quant_brain
+QUANT_BRAIN_DB_POOL_SIZE=5
+QUANT_BRAIN_DB_COMMAND_TIMEOUT=30
+DB_INIT_TIMEOUT_SECONDS=20
+DB_INIT_RETRY_SECONDS=10
+QUANT_BRAIN_API_TOKEN=
+ANTHROPIC_API_KEY=
+
+# Jobs e concorrência
+MODEL_MAINTENANCE_SECONDS=120
+SIGNAL_FINALIZER_SECONDS=120
+TACTICAL_LOOP_SECONDS=15
+JOB_MAX_CONCURRENCY=2
+JOB_MAX_QUEUE_SIZE=256
+JOB_RESERVED_PRIORITY=1
+JOB_STALE_AFTER_SECONDS=120
+TACTICAL_JOB_TIMEOUT_SECONDS=20
+SHADOW_SAMPLER_JOB_TIMEOUT_SECONDS=60
+SHADOW_SAMPLER_SYMBOL_CONCURRENCY=6
+MODEL_JOB_TIMEOUT_SECONDS=45
+MACRO_CANDLE_ANALYSIS_SECONDS=900
+MACRO_CANDLE_JOB_TIMEOUT_SECONDS=30
+EDGE_EVALUATE_TIMEOUT_SECONDS=55
+FEATURE_HTTP_CONCURRENCY=8
+FEATURE_SNAPSHOT_CONCURRENCY=3
+FEATURE_HTTP_TIMEOUT_SECONDS=4
+CYCLE_RANK_MAX_CANDIDATES=50
+CYCLE_RANK_CONCURRENCY=8
+QB_BLOCKING_WORKERS=6
+QB_EDGE_WORKERS=4
+
+# API, cache e rate limit
+RATE_LIMIT_REQUESTS=100
+RATE_LIMIT_WINDOW_SECONDS=60
+ENABLE_API_CACHE=true
+CACHE_TTL_SECONDS=30
+
+# Drift e treinamento
+DRIFT_PSI_WARN=0.10
+DRIFT_PSI_CRITICAL=0.25
+DRIFT_BRIER_WARN=0.22
+DRIFT_BRIER_CRITICAL=0.28
+DRIFT_ECE_WARN=0.08
+DRIFT_ECE_CRITICAL=0.15
+DRIFT_EXPECTANCY_WARN=0
+DRIFT_EXPECTANCY_CRITICAL=-0.20
+DRIFT_PROFIT_FACTOR_WARN=1.10
+DRIFT_PROFIT_FACTOR_CRITICAL=0.80
+MIN_TRAINING_SAMPLES=100
+SIGNAL_OUTCOME_WINDOW_SECONDS=180
+SIGNAL_OUTCOME_MIN_AGE_SECONDS=180
+SIGNAL_OUTCOME_STALE_SECONDS=900
+SIGNAL_OUTCOME_FINALIZE_BATCH_SIZE=50
+SIGNAL_DEDUPE_SECONDS=300
+SNIPER_WINDOW_SECONDS=180
+MIN_REWARD_RISK_RATIO=0.75
+MIN_PROBABILITY_EDGE=0.03
+
+# Shadow sampler
+SHADOW_SAMPLER_ENABLED=true
+SHADOW_SAMPLER_INTERVAL_SECONDS=30
+SHADOW_SAMPLER_BOOTSTRAP_SAMPLES=3
+SHADOW_SAMPLER_STATE_PATH=
+SHADOW_SAMPLER_WINDOW_SECONDS=180
+SHADOW_SAMPLER_DEDUPE_SECONDS=300
+SHADOW_SAMPLER_SYMBOLS=BTC-USDT,ETH-USDT,SOL-USDT
+SHADOW_SAMPLER_LEVERAGE=14
+SHADOW_SAMPLER_MARGIN_PER_TRADE=5
+SHADOW_SAMPLER_TAKE_PROFIT_PCT=0.22
+SHADOW_SAMPLER_STOP_LOSS_PCT=0.55
+SHADOW_SAMPLER_TAKER_FEE_BPS=5
+SHADOW_SAMPLER_SLIPPAGE_BPS_PER_SIDE=2
+SHADOW_SAMPLER_ESTIMATED_FUNDING_COST_PCT=0
+SHADOW_MODEL_SIGNAL_SOURCE_TYPE=
+SHADOW_MODEL_RF_N_JOBS=2
+COACH_SHADOW_ML_MIN_WEIGHT=0.05
+COACH_SHADOW_ML_MAX_WEIGHT=0.30
+
+# Retenção e archive
+RETENTION_MAINTENANCE_SECONDS=1800
+RETENTION_FEATURE_SNAPSHOTS_HOURS=12
+RETENTION_SIGNAL_OUTCOMES_DAYS=45
+RETENTION_NEWS_EVENTS_DAYS=2
+RETENTION_OBSERVATIONS_DAYS=7
+RETENTION_EXECUTION_QUALITY_DAYS=14
+RETENTION_TRADE_OUTCOMES_DAYS=180
+COLD_ARCHIVE_ENABLED=true
+COLD_ARCHIVE_DIR=/data/archive
+COLD_ARCHIVE_BATCH_ROWS=5000
+COLD_ARCHIVE_TABLES=feature_snapshots,signal_outcomes,observations,execution_quality,trade_outcomes
+AGGREGATE_WINDOW_MINUTES=1440
+AGGREGATE_WINDOW_HISTORY_DAYS=30
+STORAGE_TABLE_WARN_ROWS=100000
+STORAGE_TABLE_CRITICAL_ROWS=500000
+VACUUM_INTERVAL_SECONDS=86400
+
+# Sizing analítico
+POSITION_SIZING_ENABLED=true
+BASE_RISK_PCT=0.005
+MAX_RISK_PCT_PER_TRADE=0.015
+MAX_TOTAL_RISK_PCT=0.08
+MAX_SYMBOL_RISK_PCT=0.03
+MIN_MARGIN=5
+POSITION_SIZING_EQUITY_FALLBACK=1000
+ML_MICRO_EV_PCT=0.001
+ML_MAX_SNIPER_EV_PCT=0.0015
+ML_BOOST_PROB_BUFFER=0.03
+ML_MAX_SNIPER_PROB_BUFFER=0.06
+ML_KELLY_FRACTION_CAP=0.25
+ML_MICRO_KELLY_FRACTION=0.02
+
+# Governança de experimento
+EXPERIMENT_ARM=champion
+EXP_MIN_SAMPLES_PER_ARM=60
+EXP_MIN_PF_LIFT=0.10
+EXP_MIN_BOOTSTRAP_CONF=0.80
+EXP_MAX_AVG_SLIPPAGE_BPS=8
+EXP_MAX_PIPELINE_GAP_RATE=0.01
+EXP_MAX_DUPLICATE_RATE=0.001
+EXP_MAX_SESSION_LOSS_UTILIZATION=0.50
+EXP_MAX_TREATMENT_LOSS_USDT=0
+EXP_MAX_DRAWDOWN_DELTA_USDT=0
+EXP_MAX_PROMOTE_DD_WORSE_USDT=0
+
+# Aprendizado offline
+OFFLINE_LEARNER_ENABLED=true
+OFFLINE_LEARNER_INTERVAL_SECONDS=86400
+OFFLINE_LEARNER_MIN_OUTCOMES_FOR_TRAIN=20
+OFFLINE_LEARNER_MIN_SAMPLES=100
+OFFLINE_LEARNER_JOB_TIMEOUT_SECONDS=120
+TRIGGER_OUTCOMES_PATH=
+OFFLINE_LEARNER_CHECKPOINT_PATH=
+```
+
+## Segurança
+
+- Nunca exponha API Key, Secret Key, senha de banco, token do Quant Brain ou
+  `SESSION_SECRET` em issues, commits, logs ou mensagens.
+- Use chaves BingX sem permissão de saque.
+- Rotacione qualquer segredo que tenha sido exposto.
+- Use volume persistente para `/data` em cloud.
+- Mantenha `SCALP_ALLOW_EXECUTION=false` durante validação.
+- Prefira `QUANT_BRAIN_ENABLED=true` com `QUANT_BRAIN_GATE_MODE=off`: mantém
+  outcomes e análise sob demanda sem avaliar cada candidato.
+
+Documentação detalhada do executor: [`backend/README.md`](backend/README.md).
