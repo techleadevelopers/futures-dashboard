@@ -169,6 +169,7 @@ export interface NativePendingOrder {
 export interface NativeTriggerSymbol {
   symbol: string;
   currentPrice: number;
+  priceChangePct?: number | null;
   recentMovePct: number;
   atrPct: number;
   longCooldownMs: number;
@@ -185,6 +186,10 @@ export interface NativeTriggerStatus {
     enabled: boolean;
     longDetectPct: number;
     shortDetectPct: number;
+    initialLongPct: number;
+    initialShortPct: number;
+    initialLevelsPerSide: number;
+    initialTotalLevels: number;
     baseTpPct: number;
     expirationSeconds: number;
     cooldownMs: number;
