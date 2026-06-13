@@ -23,7 +23,7 @@ Import this directory as its own Git repository, or select
 Set the production environment variable:
 
 ```env
-VITE_API_URL=https://futures-execution-engine-production.up.railway.app
+VITE_API_URL=https://futures-execution-engine-production-efce.up.railway.app
 ```
 
 The included `vercel.json` builds the Vite application and provides SPA
