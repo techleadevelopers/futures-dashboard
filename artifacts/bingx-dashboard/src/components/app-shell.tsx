@@ -3,12 +3,8 @@ import {
   useGetBingXTicker,
   useGetBingXSummary,
   useDisconnectBingX,
-  useGetBotScan,
-  useGetBotConfig,
   getGetBingXTickerQueryKey,
   getGetBingXSummaryQueryKey,
-  getGetBotScanQueryKey,
-  getGetBotConfigQueryKey,
 } from "@/api-client";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,12 +19,12 @@ import {
   ArrowDown,
   Zap,
   Bot,
-  Radio,
   FlaskConical,
   BrainCircuit,
   Target,
   Dna,
   LineChart,
+  SlidersHorizontal,
 } from "lucide-react";
 
 const NAV = [
@@ -36,12 +32,12 @@ const NAV = [
   { href: "/positions", label: "Positions", icon: TrendingUp },
   { href: "/orders", label: "Orders", icon: ClipboardList },
   { href: "/analysis", label: "Analysis", icon: BarChart3 },
-  { href: "/intelligence", label: "IA Sniper", icon: BrainCircuit },
+  { href: "/intelligence", label: "IA Analyst", icon: BrainCircuit },
   { href: "/bot", label: "Bot", icon: Bot },
-  { href: "/demo", label: "Demo Lab", icon: FlaskConical, highlight: true },
-  { href: "/trigger", label: "Gatilho", icon: Target, highlight: true },
-  { href: "/neural", label: "Neural", icon: Dna, highlight: true },
-  { href: "/sniper-pnl", label: "Lucro Real", icon: LineChart, highlight: true },
+  { href: "/demo", label: "Treinamento", icon: FlaskConical, highlight: true },
+  { href: "/trigger", label: "Trigger", icon: Target, highlight: true },
+  { href: "/neural", label: "Intelligence", icon: Dna, highlight: true },
+  { href: "/config", label: "Config", icon: SlidersHorizontal, highlight: true },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
@@ -222,32 +218,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     { symbol: "BTC-USDT" },
     {
       query: {
-        refetchInterval: 5000,
+        refetchInterval: 15000,
         queryKey: getGetBingXTickerQueryKey({ symbol: "BTC-USDT" }),
       },
     }
   );
 
   const { data: summary } = useGetBingXSummary({
-    query: { queryKey: getGetBingXSummaryQueryKey(), refetchInterval: 30000 },
-  });
-
-  const { data: botConfig } = useGetBotConfig({
-    query: { queryKey: getGetBotConfigQueryKey(), refetchInterval: 60000 },
+    query: { queryKey: getGetBingXSummaryQueryKey(), refetchInterval: 60000 },
   });
 
   const btcChange = btcTicker ? parseFloat(btcTicker.priceChangePercent) : 0;
-
-  const { data: scan } = useGetBotScan(
-    { btcChangePct: btcChange },
-    {
-      query: {
-        queryKey: getGetBotScanQueryKey({ btcChangePct: btcChange }),
-        refetchInterval: 8000,
-        enabled: (botConfig?.allowedSymbols?.length ?? 0) > 0,
-      },
-    }
-  );
 
   const btcUp = btcChange >= 0;
   const fmtPrice = (v: string | undefined) => {
@@ -260,9 +241,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     disconnectMutation.mutate(undefined, { onSuccess: () => setLocation("/") });
   };
 
-  const scanSymbols = scan?.symbols ?? [];
-  const candidateCount = scan?.candidateCount ?? 0;
-  const hasTargets = (botConfig?.allowedSymbols?.length ?? 0) > 0;
   const accountSummary = summary as
     | (typeof summary & {
         recentRealizedPnl?: string;
@@ -348,9 +326,46 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           )}
         </div>
 
+        {/* Nav */}
+        <nav className="px-3 mt-4 space-y-0.5 shrink-0">
+          {NAV.map(({ href, label, icon: Icon, highlight }) => {
+            const active = location === href || (href !== "/dashboard" && location.startsWith(href));
+            return (
+              <Link
+                key={href}
+                href={href}
+                data-testid={`nav-${label.toLowerCase().replace(" ", "-")}`}
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-150 ${
+                  active
+                    ? "bg-primary/15 text-primary font-semibold"
+                    : highlight
+                    ? "text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
+                }`}
+              >
+                <Icon
+                  className={`w-4 h-4 shrink-0 ${
+                    active ? "text-primary" : highlight ? "text-blue-400" : ""
+                  }`}
+                />
+                {label}
+                {active && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-primary" />}
+                {!active && highlight && (
+                  <span className="ml-auto text-[8px] font-bold px-1 py-0.5 rounded bg-blue-500/15 text-blue-400 uppercase tracking-wide">
+                    VST
+                  </span>
+                )}
+              </Link>
+            );
+          })}
+        </nav>
+
+        {/* Spacer */}
+        <div className="flex-1 min-h-2" />
+
         {/* Account mini-summary */}
         {summary?.connected && (
-          <div className="mx-3 mt-2 p-3 rounded-lg border border-border/30 bg-muted/10 shrink-0">
+          <div className="mx-3 mb-2 p-3 rounded-lg border border-border/30 bg-muted/10 shrink-0">
             <p className="text-[9px] text-muted-foreground uppercase tracking-widest mb-1.5">
               Account
             </p>
@@ -390,125 +405,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           </div>
         )}
-
-        {/* Nav */}
-        <nav className="px-3 mt-4 space-y-0.5 shrink-0">
-          {NAV.map(({ href, label, icon: Icon, highlight }) => {
-            const active = location === href || (href !== "/dashboard" && location.startsWith(href));
-            return (
-              <Link
-                key={href}
-                href={href}
-                data-testid={`nav-${label.toLowerCase().replace(" ", "-")}`}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-150 ${
-                  active
-                    ? "bg-primary/15 text-primary font-semibold"
-                    : highlight
-                    ? "text-blue-400 hover:text-blue-300 hover:bg-blue-500/10"
-                    : "text-muted-foreground hover:text-foreground hover:bg-muted/30"
-                }`}
-              >
-                <Icon
-                  className={`w-4 h-4 shrink-0 ${
-                    active ? "text-primary" : highlight ? "text-blue-400" : ""
-                  }`}
-                />
-                {label}
-                {active && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-primary" />}
-                {!active && highlight && (
-                  <span className="ml-auto text-[8px] font-bold px-1 py-0.5 rounded bg-blue-500/15 text-blue-400 uppercase tracking-wide">
-                    VST
-                  </span>
-                )}
-              </Link>
-            );
-          })}
-        </nav>
-
-        {/* Targets / Watchlist */}
-        {hasTargets && (
-          <div className="mx-3 mt-4 rounded-lg border border-border/30 bg-muted/5 overflow-hidden shrink-0">
-            {/* Header */}
-            <div className="flex items-center justify-between px-3 py-2 border-b border-border/20">
-              <div className="flex items-center gap-1.5">
-                <Radio className="w-3 h-3 text-primary" />
-                <span className="text-[9px] font-bold text-muted-foreground uppercase tracking-widest">
-                  Targets
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                {scan && (
-                  <span
-                    className={`text-[9px] font-bold px-1 py-0.5 rounded ${
-                      candidateCount > 0
-                        ? "bg-green-500/15 text-green-400"
-                        : "bg-muted/30 text-muted-foreground"
-                    }`}
-                  >
-                    {candidateCount} ready
-                  </span>
-                )}
-                <span className="text-[9px] font-mono text-muted-foreground">≤10/s</span>
-              </div>
-            </div>
-
-            {/* Regime row */}
-            {scan && (
-              <div
-                className={`px-3 py-1.5 border-b border-border/10 flex items-center justify-between ${
-                  scan.btcRegime === "BULL"
-                    ? "bg-green-500/5"
-                    : scan.btcRegime === "BEAR"
-                    ? "bg-red-500/5"
-                    : "bg-muted/5"
-                }`}
-              >
-                <span className="text-[9px] text-muted-foreground">Regime</span>
-                <span
-                  className={`text-[9px] font-bold ${
-                    scan.btcRegime === "BULL"
-                      ? "text-green-400"
-                      : scan.btcRegime === "BEAR"
-                      ? "text-red-400"
-                      : "text-muted-foreground"
-                  }`}
-                >
-                  {scan.btcRegime} · UTC{scan.currentHourUtc}h
-                </span>
-              </div>
-            )}
-
-            {/* Symbol rows */}
-            {scanSymbols.length === 0 && (
-              <div className="px-3 py-3 text-center">
-                <p className="text-[9px] text-muted-foreground">Set SCALP_SYMBOLS in .env</p>
-              </div>
-            )}
-            {scanSymbols.map((s, i) => (
-              <TargetRow key={`${s.symbol}-${s.positionSide}-${i}`} {...s} />
-            ))}
-
-            {/* Legend */}
-            <div className="px-3 py-1.5 border-t border-border/10 flex items-center gap-3 flex-wrap">
-              <div className="flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
-                <span className="text-[8px] text-muted-foreground">ready</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-                <span className="text-[8px] text-muted-foreground">toxic</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />
-                <span className="text-[8px] text-muted-foreground">no data</span>
-              </div>
-              <span className="text-[8px] text-muted-foreground ml-auto">P=priority</span>
-            </div>
-          </div>
-        )}
-
-        {/* Spacer */}
-        <div className="flex-1 min-h-2" />
 
         {/* Disconnect */}
         <div className="p-3 border-t border-border/40 shrink-0">
