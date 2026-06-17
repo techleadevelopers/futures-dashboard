@@ -390,23 +390,28 @@ function LegacyArmedCard({ s, side }: {
   );
 }
 
-function ArmedCard({ s, side }: {
+function ArmedCard({ s, side, nativeSymbol }: {
   s: TriggerSymbolState;
   side: "LONG" | "SHORT";
+  nativeSymbol?: NativeTriggerSymbol;
 }) {
   const isLong = side === "LONG";
-  const triggerPrice = isLong ? s.longTriggerPrice : s.shortTriggerPrice;
-  const tpPct = isLong ? s.longTpPct : s.shortTpPct;
-  const deviationPct = isLong ? Math.abs(s.dropPct) : -Math.abs(s.risePct);
+  const nativeEntry = (isLong ? nativeSymbol?.longGrid : nativeSymbol?.shortGrid)?.[0];
+  const triggerPrice = nativeEntry?.triggerPrice ?? (isLong ? s.longTriggerPrice : s.shortTriggerPrice);
+  const targetPrice = nativeEntry?.targetPrice
+    ?? s.referencePrice * (1 + (isLong ? s.longTpPct : -s.shortTpPct) / 100);
+  const deviationPct = nativeSymbol
+    ? (isLong ? Math.abs(nativeSymbol.recentMovePct) : -Math.abs(nativeSymbol.recentMovePct))
+    : (isLong ? Math.abs(s.dropPct) : -Math.abs(s.risePct));
 
   return (
     <CompactTriggerCard
       token={s.symbol.replace("-USDT", "")}
       side={side}
       entryPrice={triggerPrice}
-      currentPrice={s.currentPrice}
+      currentPrice={nativeSymbol?.currentPrice ?? s.currentPrice}
       changePct={deviationPct}
-      targetPrice={s.referencePrice * (1 + (isLong ? tpPct : -tpPct) / 100)}
+      targetPrice={targetPrice}
     />
   );
 }
@@ -941,6 +946,7 @@ export default function TriggerPage() {
   }
 
   const nativeSymbols = nativeStatus?.symbols ?? [];
+  const nativeSymbolsByName = new Map(nativeSymbols.map((symbol) => [symbol.symbol, symbol]));
   const nativeSymbolsFireable = nativeSymbols.filter(s => s.wouldFireLong || s.wouldFireShort);
   const muxLocked = nativeStatus?.muxLock?.locked ?? false;
   const nativePendingBySymbol = new Map<string, { long: number; short: number }>();
@@ -1143,6 +1149,7 @@ export default function TriggerPage() {
                       key={`${s.symbol}-${side}`}
                       s={s}
                       side={side}
+                      nativeSymbol={nativeSymbolsByName.get(s.symbol)}
                     />
                   ))}
                   {armedCards.length === 0 && (nativeStatus?.pendingOrders ?? []).slice(0, 12).map((o) => (
@@ -1270,6 +1277,7 @@ export default function TriggerPage() {
                     key={`${s.symbol}-${side}`}
                     s={s}
                     side={side}
+                    nativeSymbol={nativeSymbolsByName.get(s.symbol)}
                   />
                 ))}
               </div>
