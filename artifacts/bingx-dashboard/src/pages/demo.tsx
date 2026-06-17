@@ -20,14 +20,13 @@ import AppShell from "@/components/app-shell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { apiUrl } from "@/lib/api-url";
 import { fetchDemoPositions, type DemoPosition } from "@/lib/demo-live";
 import {
   FlaskConical, ShieldCheck, ShieldOff,
   Zap, Radio, CheckCircle2, XCircle, ArrowRight, Loader2,
-  TrendingUp, TrendingDown, DollarSign, LogOut, Play, Square,
+  TrendingUp, TrendingDown, DollarSign, LogOut,
   Clock, Target, AlertTriangle, RefreshCw, Shield,
   BarChart3, Crosshair, ChevronDown, ChevronUp, Award, Layers, ArrowUp, ArrowDown,
 } from "lucide-react";
@@ -396,7 +395,7 @@ export default function DemoPage() {
 
   const { data: btcTicker } = useGetBingXTicker(
     { symbol: "BTC-USDT" },
-    { query: { refetchInterval: 5000, queryKey: getGetBingXTickerQueryKey({ symbol: "BTC-USDT" }) } }
+    { query: { refetchInterval: 15000, queryKey: getGetBingXTickerQueryKey({ symbol: "BTC-USDT" }) } }
   );
 
   const { data: config } = useGetBotConfig({
@@ -412,26 +411,33 @@ export default function DemoPage() {
   const { data: demoStatus, refetch: refetchStatus } = useGetDemoStatus({
     query: {
       queryKey: getGetDemoStatusQueryKey(),
-      refetchInterval: 3000,
+      refetchInterval: 5000,
       placeholderData: (previousData) => previousData,
     },
   });
 
+  const statusPositions =
+    ((demoStatus as { positions?: DemoPosition[] } | undefined)?.positions ?? []);
   const {
-    data: demoPositions = [],
+    data: priorityDemoPositions,
     refetch: refetchDemoPositions,
+    isFetching: positionsRefreshing,
   } = useQuery({
-    queryKey: ["demo-positions"],
+    queryKey: ["demo-positions-priority"],
     queryFn: fetchDemoPositions,
     enabled: !!demoStatus?.connected,
-    refetchInterval: 3000,
+    refetchInterval: 1_000,
+    refetchIntervalInBackground: true,
+    placeholderData: (previousData) => previousData,
+    retry: 1,
   });
+  const demoPositions = priorityDemoPositions ?? statusPositions;
 
   const { data: riskCheck } = useQuery({
     queryKey: ["demo-risk-check"],
     queryFn: runDemoRiskCheck,
     enabled: !!demoStatus?.connected,
-    refetchInterval: 2000,
+    refetchInterval: demoPositions.length > 0 ? 15000 : false,
   });
 
   const { data: sniperStatus, refetch: refetchSniper } = useQuery({
@@ -473,15 +479,19 @@ export default function DemoPage() {
         trigger?: {
           loopRunning: boolean; enabled: boolean; cycleMs: number;
           hasExecutionCredentials: boolean; lastCycleAt: number | null; lastSkipReason: string | null;
+          cycleCount?: number; signalCount?: number; placedCount?: number;
         };
         placementInFlight?: boolean;
         monitorInFlight?: boolean;
         skippedPlacementOverlaps?: number;
         skippedMonitorOverlaps?: number;
-        config: { globalMax: number; perSymbolMax: number; cycleMs: number; scoreTiers?: string };
+        config: {
+          globalMax: number; perSymbolMax: number; cycleMs: number; scoreTiers?: string;
+          autoplaceEnabled?: boolean; triggerOnly?: boolean;
+        };
       }>;
     },
-    refetchInterval: demoStatus?.connected ? 4000 : false,
+    refetchInterval: demoStatus?.connected ? 10000 : false,
     enabled: !!demoStatus?.connected,
   });
 
@@ -513,7 +523,7 @@ export default function DemoPage() {
         }>;
       }>;
     },
-    refetchInterval: demoStatus?.connected ? 15000 : false,
+    refetchInterval: demoStatus?.connected ? 30000 : false,
     enabled: !!demoStatus?.connected,
   });
 
@@ -524,8 +534,8 @@ export default function DemoPage() {
     {
       query: {
         queryKey: getGetBotScanQueryKey({ btcChangePct: btcChange }),
-        refetchInterval: 8000,
-        enabled: !!(demoStatus?.connected && (config?.allowedSymbols?.length ?? 0) > 0),
+        refetchInterval: false,
+        enabled: false,
       },
     }
   );
@@ -535,8 +545,8 @@ export default function DemoPage() {
     {
       query: {
         queryKey: getGetBotEdgeQueryKey({ btcChangePct: btcChange, interval: "5m" }),
-        refetchInterval: 8000,
-        enabled: !!(demoStatus?.connected && (config?.allowedSymbols?.length ?? 0) > 0),
+        refetchInterval: false,
+        enabled: false,
       },
     }
   );
@@ -573,9 +583,9 @@ export default function DemoPage() {
       });
       const data = await response.json() as { connected?: boolean; balance?: string; currency?: string; error?: string };
       if (!response.ok || !data.connected) throw new Error(data.error ?? "Credenciais VST inválidas");
-      setAutoFire(true);
+      setAutoFire(false);
       autoFiredKeysRef.current.clear();
-      toast({ title: "Demo VST ativado", description: `Auto-Fire ligado · Balance: ${data.balance ?? "?"} ${data.currency ?? "VST"}` });
+      toast({ title: "Demo VST ativado", description: `Aguardando movimento EDGE · Balance: ${data.balance ?? "?"} ${data.currency ?? "VST"}` });
       refetchStatus();
     } catch (error) {
       toast({
@@ -756,9 +766,7 @@ export default function DemoPage() {
   const autoFireRef = useRef(autoFire);
   autoFireRef.current = autoFire;
   const loggedRiskCloseRef = useRef<Set<string>>(new Set());
-  const statusDemoPositions =
-    ((demoStatus as { positions?: DemoPosition[] } | undefined)?.positions ?? []);
-  const visibleDemoPositions = demoPositions.length > 0 ? demoPositions : statusDemoPositions;
+  const visibleDemoPositions = demoPositions;
 
   useEffect(() => {
     for (const trade of sniperStatus?.openTradesList ?? []) {
@@ -775,12 +783,6 @@ export default function DemoPage() {
       });
     }
   }, [sniperStatus?.openTradesList]);
-
-  useEffect(() => {
-    if (demoConnected) {
-      setAutoFire(true);
-    }
-  }, [demoConnected]);
 
   useEffect(() => {
     if (!riskCheck?.closed?.length) return;
@@ -893,22 +895,8 @@ export default function DemoPage() {
   const scanSymbols = scan?.symbols ?? [];
   const candidates = scanSymbols.filter(s => s.isCandidate);
 
-  // Get BTC price formatted for standalone display
-  const btcPrice = btcTicker?.lastPrice 
-    ? `$${parseFloat(btcTicker.lastPrice).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
-    : "—";
-
   return (
     <AppShell>
-      {/* BTC Price - Standalone outside any card div */}
-      <div className="fixed top-4 right-6 z-50 bg-black/60 backdrop-blur-md rounded-full px-4 py-1.5 border border-orange-500/30 shadow-lg">
-        <div className="flex items-center gap-2">
-          <span className="text-orange-400 text-xs font-mono font-bold">BTC/USDT</span>
-          <span className="text-white text-sm font-mono font-bold tracking-tight">{btcPrice}</span>
-          <span className="text-red-400 text-[10px] font-mono font-bold ml-1">SHORT</span>
-        </div>
-      </div>
-
       <div className="p-6 space-y-6 max-w-[1400px] mx-auto">
         {/* Header */}
         <div className="space-y-3">
@@ -959,159 +947,9 @@ export default function DemoPage() {
             </div>
           </div>
 
-          {/* ── 4-col mini panel ── */}
-          <div className="grid grid-cols-4 divide-x divide-border/20 rounded-lg border border-border/30 bg-card/20 overflow-hidden">
-
-            {/* Col 1 — Conta Demo */}
-            <div className="px-3 py-2.5 space-y-1.5">
-              <div className="flex items-center gap-1.5">
-                <DollarSign className="w-3 h-3 text-blue-400" />
-                <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">Conta </span>
-                {demoConnected && <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse ml-auto" />}
-              </div>
-              {!demoConnected ? (
-                <Button
-                  size="sm"
-                  className="w-full h-6 text-[10px] bg-blue-600 hover:bg-blue-500 text-white"
-                  onClick={handleConnect}
-                  disabled={demoConnectLoading}
-                >
-                  {demoConnectLoading ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : "Conectar VST"}
-                </Button>
-              ) : demoStatus ? (
-                <div className="space-y-0.5">
-                  <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">Balance</span><span className="text-[9px] font-mono font-semibold">{parseFloat(demoStatus.balance ?? "0").toFixed(2)}</span></div>
-                  <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">Disponível</span><span className="text-[9px] font-mono">{parseFloat(demoStatus.availableBalance ?? "0").toFixed(2)}</span></div>
-                  <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">PnL</span><span className={`text-[9px] font-mono ${parseFloat(demoStatus.unrealizedPnl ?? "0") >= 0 ? "text-green-400" : "text-red-400"}`}>{parseFloat(demoStatus.unrealizedPnl ?? "0") >= 0 ? "+" : ""}{parseFloat(demoStatus.unrealizedPnl ?? "0").toFixed(2)}</span></div>
-                  <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">Posições</span><span className="text-[9px] font-mono font-semibold">{demoStatus.openPositionsCount ?? 0}</span></div>
-                </div>
-              ) : null}
-            </div>
-
-            {/* Col 2 — Parâmetros */}
-            <div className="px-3 py-2.5 space-y-1.5">
-              <div className="flex items-center gap-1.5">
-                <Target className="w-3 h-3 text-primary" />
-                <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">Parâmetros</span>
-              </div>
-              {config ? (
-                <div className="space-y-0.5">
-                  <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">Leverage</span><span className="text-[9px] font-mono font-semibold">{config.leverage}×</span></div>
-                  <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">Margin</span><span className="text-[9px] font-mono font-semibold">{config.marginPerTrade} USDT</span></div>
-                  <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">TP · SL</span><span className="text-[9px] font-mono font-semibold">{config.takeProfitPct}% · {config.stopLossPct}%</span></div>
-                  <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">EV mín</span><span className="text-[9px] font-mono font-semibold">{config.evMinThreshold > 0 ? ("≥" + config.evMinThreshold.toFixed(4)) : "off"}</span></div>
-                  <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">WR mín</span><span className="text-[9px] font-mono font-semibold">{config.winRateMin > 0 ? ("≥" + (config.winRateMin * 100).toFixed(0) + "%") : "off"}</span></div>
-                </div>
-              ) : <span className="text-[9px] text-muted-foreground/40">—</span>}
-            </div>
-
-            {/* Col 3 — Auto-Fire */}
-            <div className="px-3 py-2.5 space-y-1.5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  {autoFire ? <Play className="w-3 h-3 text-orange-400" /> : <Square className="w-3 h-3 text-muted-foreground" />}
-                  <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">Auto-Fire</span>
-                </div>
-                <Switch checked={autoFire} onCheckedChange={setAutoFire} className="scale-[0.65] origin-right" />
-              </div>
-              {autoFire ? (
-                <div className="space-y-0.5">
-                  <div className="flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse" />
-                    <span className="text-[9px] text-orange-400 font-semibold">ESCANEANDO</span>
-                  </div>
-                  <span className="text-[9px] text-muted-foreground">{candidates.length} candidatos ativos</span>
-                </div>
-              ) : (
-                <p className="text-[9px] text-muted-foreground/60 leading-relaxed">Dispara ordens nos candidatos que passam os gates.</p>
-              )}
-            </div>
-
-            {/* Col 4 — Sniper Autopilot */}
-            <div className="px-3 py-2.5 space-y-1.5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  <Crosshair className={`w-3 h-3 ${sniperStatus?.running ? "text-purple-400" : "text-muted-foreground"}`} />
-                  <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">Sniper Autopilot</span>
-                  {sniperStatus?.running && (
-                    <span className="flex items-center gap-0.5 px-1 py-0.5 rounded-full bg-purple-500/20 text-[8px] font-mono font-bold text-purple-400">
-                      <span className="w-1 h-1 rounded-full bg-purple-400 animate-pulse" />LIVE
-                    </span>
-                  )}
-                </div>
-                <Button
-                  size="sm" variant="ghost" disabled={sniperLoading}
-                  onClick={sniperStatus?.running ? handleSniperStop : handleSniperStart}
-                  className={`h-5 px-1.5 text-[9px] font-bold ${sniperStatus?.running ? "text-red-400 hover:text-red-300" : "text-purple-400 hover:text-purple-300"}`}
-                >
-                  {sniperLoading ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : sniperStatus?.running ? "Stop" : "Start"}
-                </Button>
-              </div>
-              <div className="grid grid-cols-4 gap-1">
-                {([
-                  ["Cycles", sniperStatus?.cycleCount ?? 0],
-                  ["Placed", sniperStatus?.totalPlaced ?? 0],
-                  ["Open", sniperStatus?.openTrades ?? 0],
-                  ["Uptime", sniperStatus?.uptimeMs ? (Math.floor(sniperStatus.uptimeMs / 60000) + "m") : "-"],
-                ] as [string, string | number][]).map(([l, v]) => (
-                  <div key={l} className="flex flex-col items-center py-1 rounded bg-muted/10 border border-border/10">
-                    <span className="text-[9px] font-bold font-mono">{String(v)}</span>
-                    <span className="text-[8px] text-muted-foreground">{l}</span>
-                  </div>
-                ))}
-              </div>
-              {sniperStatus?.lastCycleSummary && (
-                <div className="flex flex-wrap gap-1">
-                  <span className={`px-1 py-0.5 rounded text-[8px] font-mono font-bold ${sniperStatus.lastCycleSummary.btcRegime === "BULL" ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>{sniperStatus.lastCycleSummary.btcRegime}</span>
-                  <span className="px-1 py-0.5 rounded text-[8px] font-mono bg-muted/15 text-muted-foreground">{sniperStatus.lastCycleSummary.scanned} scanned</span>
-                  <span className="px-1 py-0.5 rounded text-[8px] font-mono bg-green-500/10 text-green-400">+{sniperStatus.lastCycleSummary.placed} placed</span>
-                  {sniperStatus.lastCycleSummary.skipped > 0 && (
-                    <span className="px-1 py-0.5 rounded text-[8px] font-mono bg-amber-500/10 text-amber-400">{sniperStatus.lastCycleSummary.skipped} skipped</span>
-                  )}
-                </div>
-              )}
-              <div className="space-y-1 rounded border border-border/10 bg-muted/5 p-1.5">
-                <div className="flex flex-wrap gap-1">
-                  <span className={`px-1 py-0.5 rounded text-[8px] font-mono ${sniperStatus?.aggression?.aggressionState === "PAUSED" ? "bg-red-500/15 text-red-400" : "bg-green-500/10 text-green-400"}`}>
-                    {sniperStatus?.aggression?.aggressionState ?? "AGG --"}
-                  </span>
-                  <span className={`px-1 py-0.5 rounded text-[8px] font-mono ${sniperStatus?.trigger?.loopRunning ? "bg-green-500/10 text-green-400" : "bg-amber-500/10 text-amber-400"}`}>
-                    trigger {sniperStatus?.trigger?.loopRunning ? "on" : "off"}
-                  </span>
-                  <span className={`px-1 py-0.5 rounded text-[8px] font-mono ${sniperStatus?.trigger?.hasExecutionCredentials ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"}`}>
-                    creds {sniperStatus?.trigger?.hasExecutionCredentials ? "ok" : "no"}
-                  </span>
-                  {(sniperStatus?.placementInFlight || sniperStatus?.monitorInFlight) && (
-                    <span className="px-1 py-0.5 rounded text-[8px] font-mono bg-blue-500/10 text-blue-400">in-flight</span>
-                  )}
-                </div>
-                {(sniperStatus?.aggression?.reason || sniperStatus?.lastCycleSummary?.aggressionReason || sniperStatus?.trigger?.lastSkipReason || sniperStatus?.stopReason) && (
-                  <p className="line-clamp-2 font-mono text-[8px] leading-snug text-amber-300/80">
-                    {sniperStatus?.aggression?.reason
-                      ?? sniperStatus?.lastCycleSummary?.aggressionReason
-                      ?? sniperStatus?.trigger?.lastSkipReason
-                      ?? sniperStatus?.stopReason}
-                  </p>
-                )}
-                {(sniperStatus?.recentHistory?.length ?? 0) > 0 && (
-                  <div className="space-y-0.5">
-                    {sniperStatus!.recentHistory!.slice(-3).reverse().map((cycle) => (
-                      <div key={cycle.cycle} className="flex items-center justify-between gap-2 rounded bg-black/10 px-1 py-0.5 text-[8px]">
-                        <span className="font-mono text-muted-foreground">#{cycle.cycle} · {fmtAgo(cycle.startedAt)}</span>
-                        <span className="font-mono text-muted-foreground">{cycle.scanned}s/{cycle.placed}p/{cycle.skipped}k</span>
-                        <span className={cycle.aggressionState === "PAUSED" ? "text-red-400" : cycle.placed > 0 ? "text-green-400" : "text-amber-400"}>
-                          {cycle.aggressionState ?? (cycle.placed > 0 ? "PLACED" : "WAIT")}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-[380px_minmax(450px,1fr)_320px] gap-5 items-start">
+        <div className="grid grid-cols-1 xl:grid-cols-[minmax(380px,1fr)_minmax(320px,0.85fr)] gap-5 items-start">
           {/* ── LEFT PANEL ── */}
           <div className="space-y-4">
             {/* Connect form */}
@@ -1161,6 +999,7 @@ export default function DemoPage() {
                       Posições Futuros
                     </span>
                     <span className="text-[10px] font-mono text-muted-foreground">
+                      {positionsRefreshing && <Loader2 className="inline w-2.5 h-2.5 mr-1 animate-spin" />}
                       {visibleDemoPositions.length} aberta{visibleDemoPositions.length === 1 ? "" : "s"}
                     </span>
                   </CardTitle>
@@ -1192,7 +1031,7 @@ export default function DemoPage() {
           </div>
 
 {/* ── CENTER PANEL — scanner ── */}
-<Card className="bg-card/30 border-border/40 flex flex-col h-[320px]">
+{scan && false && <Card className="bg-card/30 border-border/40 flex flex-col h-[320px]">
   <CardHeader className="px-5 pt-5 pb-3 border-b border-border/15 shrink-0">
     <div className="flex items-center justify-between">
       <div className="flex items-center gap-2">
@@ -1211,15 +1050,15 @@ export default function DemoPage() {
       <div className="flex items-center gap-2">
         {scan && (
           <div className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[9px] font-mono font-bold ${
-            scan.btcRegime === "BULL" ? "bg-green-500/10 text-green-400 border border-green-500/20"
-            : scan.btcRegime === "BEAR" ? "bg-red-500/10 text-red-400 border border-red-500/20"
+            scan!.btcRegime === "BULL" ? "bg-green-500/10 text-green-400 border border-green-500/20"
+            : scan!.btcRegime === "BEAR" ? "bg-red-500/10 text-red-400 border border-red-500/20"
             : "bg-muted/20 text-muted-foreground border border-border/30"
           }`}>
             <div className={`w-1.5 h-1.5 rounded-full ${
-              scan.btcRegime === "BULL" ? "bg-green-400 animate-pulse"
-              : scan.btcRegime === "BEAR" ? "bg-red-400" : "bg-muted-foreground"
+              scan!.btcRegime === "BULL" ? "bg-green-400 animate-pulse"
+              : scan!.btcRegime === "BEAR" ? "bg-red-400" : "bg-muted-foreground"
             }`} />
-            {scan.btcRegime} · UTC{scan.currentHourUtc}h
+            {scan!.btcRegime} · UTC{scan!.currentHourUtc}h
           </div>
         )}
       </div>
@@ -1265,6 +1104,7 @@ export default function DemoPage() {
           const formatPrice = (price: string | undefined) => {
             if (!price) return "—";
             const n = parseFloat(price);
+            if (Number.isFinite(n) && n <= 0) return "--";
             if (isNaN(n)) return "—";
             if (fullPair.includes("BTC") || fullPair.includes("ETH")) {
               return `$${n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
@@ -1465,7 +1305,7 @@ export default function DemoPage() {
       </div>
     </div>
   )}
-</Card>
+</Card>}
 
 {/* ── RIGHT PANEL — log ── */}
 <Card className="bg-card/30 border-border/40 flex flex-col h-[320px]">
@@ -1711,6 +1551,131 @@ export default function DemoPage() {
             </div>
           )}
         </Card>
+
+        {/* Demo controls */}
+        <div className="grid grid-cols-3 divide-x divide-border/20 rounded-lg border border-border/30 bg-card/20 overflow-hidden">
+          <div className="px-3 py-2.5 space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <DollarSign className="w-3 h-3 text-blue-400" />
+              <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">Conta</span>
+              {demoConnected && <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse ml-auto" />}
+            </div>
+            {!demoConnected ? (
+              <Button
+                size="sm"
+                className="w-full h-6 text-[10px] bg-blue-600 hover:bg-blue-500 text-white"
+                onClick={handleConnect}
+                disabled={demoConnectLoading}
+              >
+                {demoConnectLoading ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : "Conectar VST"}
+              </Button>
+            ) : demoStatus ? (
+              <div className="space-y-0.5">
+                <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">Balance</span><span className="text-[9px] font-mono font-semibold">{parseFloat(demoStatus.balance ?? "0").toFixed(2)}</span></div>
+                <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">Disponível</span><span className="text-[9px] font-mono">{parseFloat(demoStatus.availableBalance ?? "0").toFixed(2)}</span></div>
+                <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">PnL</span><span className={`text-[9px] font-mono ${parseFloat(demoStatus.unrealizedPnl ?? "0") >= 0 ? "text-green-400" : "text-red-400"}`}>{parseFloat(demoStatus.unrealizedPnl ?? "0") >= 0 ? "+" : ""}{parseFloat(demoStatus.unrealizedPnl ?? "0").toFixed(2)}</span></div>
+                <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">Posições</span><span className="text-[9px] font-mono font-semibold">{demoStatus.openPositionsCount ?? 0}</span></div>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="px-3 py-2.5 space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <Target className="w-3 h-3 text-primary" />
+              <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">Parâmetros</span>
+            </div>
+            {config ? (
+              <div className="space-y-0.5">
+                <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">Leverage</span><span className="text-[9px] font-mono font-semibold">{config.leverage}×</span></div>
+                <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">Margin</span><span className="text-[9px] font-mono font-semibold">{config.marginPerTrade} USDT</span></div>
+                <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">TP · SL</span><span className="text-[9px] font-mono font-semibold">{config.takeProfitPct}% · {config.stopLossPct}%</span></div>
+                <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">EV mín</span><span className="text-[9px] font-mono font-semibold">{config.evMinThreshold > 0 ? ("≥" + config.evMinThreshold.toFixed(4)) : "off"}</span></div>
+                <div className="flex justify-between"><span className="text-[9px] text-muted-foreground">WR mín</span><span className="text-[9px] font-mono font-semibold">{config.winRateMin > 0 ? ("≥" + (config.winRateMin * 100).toFixed(0) + "%") : "off"}</span></div>
+              </div>
+            ) : <span className="text-[9px] text-muted-foreground/40">—</span>}
+          </div>
+
+          <div className="px-3 py-2.5 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <Crosshair className={`w-3 h-3 ${sniperStatus?.running ? "text-purple-400" : "text-muted-foreground"}`} />
+                <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">Sniper Autopilot</span>
+                {sniperStatus?.running && (
+                  <span className="flex items-center gap-0.5 px-1 py-0.5 rounded-full bg-purple-500/20 text-[8px] font-mono font-bold text-purple-400">
+                    <span className="w-1 h-1 rounded-full bg-purple-400 animate-pulse" />LIVE
+                  </span>
+                )}
+              </div>
+              <Button
+                size="sm" variant="ghost" disabled={sniperLoading}
+                onClick={sniperStatus?.running ? handleSniperStop : handleSniperStart}
+                className={`h-5 px-1.5 text-[9px] font-bold ${sniperStatus?.running ? "text-red-400 hover:text-red-300" : "text-purple-400 hover:text-purple-300"}`}
+              >
+                {sniperLoading ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : sniperStatus?.running ? "Stop" : "Start"}
+              </Button>
+            </div>
+            <div className="grid grid-cols-4 gap-1">
+              {([
+                ["Cycles", sniperStatus?.config?.triggerOnly ? (sniperStatus?.trigger?.cycleCount ?? 0) : (sniperStatus?.cycleCount ?? 0)],
+                ["Placed", sniperStatus?.config?.triggerOnly ? (sniperStatus?.trigger?.placedCount ?? 0) : (sniperStatus?.totalPlaced ?? 0)],
+                ["Open", sniperStatus?.openTrades ?? 0],
+                ["Uptime", sniperStatus?.uptimeMs ? (Math.floor(sniperStatus.uptimeMs / 60000) + "m") : "-"],
+              ] as [string, string | number][]).map(([l, v]) => (
+                <div key={l} className="flex flex-col items-center py-1 rounded bg-muted/10 border border-border/10">
+                  <span className="text-[9px] font-bold font-mono">{String(v)}</span>
+                  <span className="text-[8px] text-muted-foreground">{l}</span>
+                </div>
+              ))}
+            </div>
+            {sniperStatus?.lastCycleSummary && (
+              <div className="flex flex-wrap gap-1">
+                <span className={`px-1 py-0.5 rounded text-[8px] font-mono font-bold ${sniperStatus.lastCycleSummary.btcRegime === "BULL" ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>{sniperStatus.lastCycleSummary.btcRegime}</span>
+                <span className="px-1 py-0.5 rounded text-[8px] font-mono bg-muted/15 text-muted-foreground">{sniperStatus.lastCycleSummary.scanned} scanned</span>
+                <span className="px-1 py-0.5 rounded text-[8px] font-mono bg-green-500/10 text-green-400">+{sniperStatus.lastCycleSummary.placed} placed</span>
+                {sniperStatus.lastCycleSummary.skipped > 0 && (
+                  <span className="px-1 py-0.5 rounded text-[8px] font-mono bg-amber-500/10 text-amber-400">{sniperStatus.lastCycleSummary.skipped} skipped</span>
+                )}
+              </div>
+            )}
+            <div className="space-y-1 rounded border border-border/10 bg-muted/5 p-1.5">
+              <div className="flex flex-wrap gap-1">
+                <span className={`px-1 py-0.5 rounded text-[8px] font-mono ${sniperStatus?.aggression?.aggressionState === "PAUSED" ? "bg-red-500/15 text-red-400" : "bg-green-500/10 text-green-400"}`}>
+                  {sniperStatus?.config?.triggerOnly ? "TRIGGER_ONLY" : (sniperStatus?.aggression?.aggressionState ?? "AGG --")}
+                </span>
+                <span className={`px-1 py-0.5 rounded text-[8px] font-mono ${sniperStatus?.trigger?.loopRunning ? "bg-green-500/10 text-green-400" : "bg-amber-500/10 text-amber-400"}`}>
+                  trigger {sniperStatus?.trigger?.loopRunning ? "on" : "off"}
+                </span>
+                <span className={`px-1 py-0.5 rounded text-[8px] font-mono ${sniperStatus?.trigger?.hasExecutionCredentials ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"}`}>
+                  creds {sniperStatus?.trigger?.hasExecutionCredentials ? "ok" : "no"}
+                </span>
+                {(sniperStatus?.placementInFlight || sniperStatus?.monitorInFlight) && (
+                  <span className="px-1 py-0.5 rounded text-[8px] font-mono bg-blue-500/10 text-blue-400">in-flight</span>
+                )}
+              </div>
+              {(sniperStatus?.aggression?.reason || sniperStatus?.lastCycleSummary?.aggressionReason || sniperStatus?.trigger?.lastSkipReason || sniperStatus?.stopReason) && (
+                <p className="line-clamp-2 font-mono text-[8px] leading-snug text-amber-300/80">
+                  {sniperStatus?.aggression?.reason
+                    ?? sniperStatus?.lastCycleSummary?.aggressionReason
+                    ?? sniperStatus?.trigger?.lastSkipReason
+                    ?? sniperStatus?.stopReason}
+                </p>
+              )}
+              {(sniperStatus?.recentHistory?.length ?? 0) > 0 && (
+                <div className="space-y-0.5">
+                  {sniperStatus!.recentHistory!.slice(-3).reverse().map((cycle) => (
+                    <div key={cycle.cycle} className="flex items-center justify-between gap-2 rounded bg-black/10 px-1 py-0.5 text-[8px]">
+                      <span className="font-mono text-muted-foreground">#{cycle.cycle} · {fmtAgo(cycle.startedAt)}</span>
+                      <span className="font-mono text-muted-foreground">{cycle.scanned}s/{cycle.placed}p/{cycle.skipped}k</span>
+                      <span className={cycle.aggressionState === "PAUSED" ? "text-red-400" : cycle.placed > 0 ? "text-green-400" : "text-amber-400"}>
+                        {cycle.aggressionState ?? (cycle.placed > 0 ? "PLACED" : "WAIT")}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
 
         {/* How it works */}
         <Card className="border-border/20 bg-card/10">
