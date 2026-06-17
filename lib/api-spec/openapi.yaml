@@ -1183,6 +1183,10 @@ components:
           type: string
         marginType:
           type: string
+        allowLongEntries:
+          type: boolean
+        allowShortEntries:
+          type: boolean
         allowExecution:
           type: boolean
         maxSessionLoss:
@@ -1225,6 +1229,10 @@ components:
           type: string
         marginType:
           type: string
+        allowLongEntries:
+          type: boolean
+        allowShortEntries:
+          type: boolean
         allowExecution:
           type: boolean
         maxSessionLoss:
@@ -1257,6 +1265,8 @@ components:
         - hourBlacklist
         - orderType
         - marginType
+        - allowLongEntries
+        - allowShortEntries
         - allowExecution
         - maxSessionLoss
         - loadedAt
