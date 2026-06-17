@@ -15,8 +15,15 @@ import IntelligencePage from "@/pages/intelligence";
 import TriggerPage from "@/pages/trigger";
 import NeuralPage from "@/pages/neural";
 import SniperPnlPage from "@/pages/sniper-pnl";
+import ConfigPage from "@/pages/config";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: false,
+    },
+  },
+});
 
 function Router() {
   return (
@@ -33,6 +40,7 @@ function Router() {
       <Route path="/neural" component={NeuralPage} />
       <Route path="/sniper-pnl" component={SniperPnlPage} />
       <Route path="/settings" component={SettingsPage} />
+      <Route path="/config" component={ConfigPage} />
       <Route component={NotFound} />
     </Switch>
   );
