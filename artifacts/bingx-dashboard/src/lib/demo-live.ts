@@ -40,6 +40,7 @@ export async function fetchDemoAnalysisState(): Promise<unknown> {
 export async function fetchDemoPositions(): Promise<DemoPosition[]> {
   const response = await fetch(apiUrl("/api/demo/positions"), {
     credentials: "include",
+    cache: "no-store",
   });
   if (!response.ok) throw new Error(`Demo positions HTTP ${response.status}`);
   return response.json() as Promise<DemoPosition[]>;
